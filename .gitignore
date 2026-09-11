@@ -1,0 +1,80 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Environment & secrets
+.env
+api.txt
+
+# Profile configs (contain API tokens) — track .example.json templates only
+config/settings_*.json
+!config/settings_*.example.json
+
+# Local/personal config (machine-specific paths, runtime state, generated)
+config/shortcuts.json
+config/claude_settings.json
+config/active_profile
+
+# Logs
+*.log
+.sessions/
+
+# Session persistence
+.sessions/
+
+# Windows Zone.Identifier
+*.Zone.Identifier
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User personal notes
+doc/
+
+# Debug
+openclaw_debug/
+
+# Legacy feishu_bot automation artifacts — contain live session tokens,
+# browser profile (cookies/login state) and recorded HTTP traffic with secrets.
+# The whole toolchain is deprecated; only MANUAL_SETUP.md and openclaw-scopes.json are useful.
+scripts/feishu_bot/chrome_profile/
+scripts/feishu_bot/recording/
+scripts/feishu_bot/artifacts/
+# Feishu setup runtime artifacts and credentials
+auto_feishu/feishu-app-result.json
+auto_feishu/artifacts/
+auto_feishu/.env
+auto_feishu/node_modules/
+auto_feishu/dist/
+auto_feishu/*.log
+prev_work/feishu-app-result.json
+prev_work/artifacts/
+prev_work/.env
+
+# Runtime preferences & test cache
+.preferences/
+.pytest_cache/
+
+# Local runtime workspace config & logs
+.claude/
+.agents/
+audit.log
+
+# Subproject secrets & txt files
+auto_feishu/*.txt
+auto_feishu/key.txt
+

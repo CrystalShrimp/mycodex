@@ -1,0 +1,13 @@
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-proj-fake-test-token-ABC123defGHI456jklMNO789pqrSTUvwxYZfor-testing-only",
+    "ANTHROPIC_BASE_URL": "https://api.openai.com/v1",
+    "API_TIMEOUT_MS": "3000000",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-4o-mini",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-4o",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "o3-mini"
+  },
+  "model": "opus[1m]"
+}

@@ -1,0 +1,44 @@
+{
+  "deepseek": {
+    "config": {
+      "wide_screen_mode": true
+    },
+    "header": {
+      "title": {
+        "tag": "plain_text",
+        "content": "💳 API 额度余额 (DeepSeek)"
+      },
+      "template": "blue"
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": "💳 **供应商**: `DeepSeek` (Profile: `deepseek`)\n\n服务状态: **正常**\n\n**CNY 账户**:\n• 总可用余额: `10.03 CNY`\n• 充值本金: `10.03 CNY`\n• 赠送体验金: `0.00 CNY`\n"
+        }
+      }
+    ]
+  },
+  "glm": {
+    "config": {
+      "wide_screen_mode": true
+    },
+    "header": {
+      "title": {
+        "tag": "plain_text",
+        "content": "💳 API 额度余额 (智谱 GLM)"
+      },
+      "template": "blue"
+    },
+    "elements": [
+      {
+        "tag": "div",
+        "text": {
+          "tag": "lark_md",
+          "content": "💳 **供应商**: `智谱 GLM` (Profile: `glm`)\n\n账户等级: **PRO**\n\n📊 **用量与流控限额明细**:\n• **TOKENS_LIMIT**: 已使用 `40%`\n• **TOKENS_LIMIT**: 已使用 `8%`\n• **TIME_LIMIT**: 已使用 `1%` | 剩余额度: `982` (用量: `18`)"
+        }
+      }
+    ]
+  }
+}

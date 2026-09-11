@@ -1,0 +1,27 @@
+{
+    "appName":  "myclaw",
+    "appDescription":  "用于接入 myclaw 的飞书机器人",
+    "appIconPath":  "./icon.png",
+    "botName":  "myclaw 助手",
+    "reuseStartedApp":  false,
+    "permissionsImportJsonPath":  "./feishu-permissions.json",
+    "enableGroupMessagePermission":  true,
+    "enableEventSubscription":  true,
+    "eventNames":  [
+                       "im.message.receive_v1",
+                       "card.action.trigger"
+                   ],
+    "publishAfterSetup":  true,
+    "envPath":  "../.env",
+    "localServiceUrl":  "http://127.0.0.1:8080/health",
+    "localServiceRootDir":  "..",
+    "startLocalService":  true,
+    "localServiceWaitMs":  30000,
+    "resultPath":  "./feishu-app-result.json",
+    "screenshotsDir":  "./artifacts/screenshots",
+    "htmlDumpDir":  "./artifacts/html",
+    "storageStatePath":  "./artifacts/feishu-storage-state.json",
+    "userDataDirPath":  "./artifacts/feishu-user-data",
+    "timeoutMs":  20000,
+    "loginTimeoutMs":  600000
+}
