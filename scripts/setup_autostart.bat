@@ -7,7 +7,8 @@ echo ===================================================
 echo.
 
 set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-set "NEW_LNK=%STARTUP_DIR%\MyClaw.lnk"
+REM 快捷方式名与同机 myclaw 原项目错开，避免互相覆盖启动项。
+set "NEW_LNK=%STARTUP_DIR%\MyCodex.lnk"
 set "MYCLAW_BAT=%~dp0..\MyClaw.bat"
 
 if not exist "%MYCLAW_BAT%" (
@@ -31,7 +32,7 @@ echo Set shortcut = WshShell.CreateShortcut("%NEW_LNK%") >> "%VBS_SCRIPT%"
 echo shortcut.TargetPath = "%MYCLAW_BAT%" >> "%VBS_SCRIPT%"
 echo shortcut.WorkingDirectory = "%~dp0.." >> "%VBS_SCRIPT%"
 echo shortcut.WindowStyle = 7 >> "%VBS_SCRIPT%"
-echo shortcut.Description = "MyClaw AutoStart Service" >> "%VBS_SCRIPT%"
+echo shortcut.Description = "MyCodex AutoStart Service" >> "%VBS_SCRIPT%"
 echo shortcut.Save >> "%VBS_SCRIPT%"
 
 cscript //nologo "%VBS_SCRIPT%"

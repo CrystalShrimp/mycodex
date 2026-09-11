@@ -3,41 +3,41 @@ setlocal
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] н╢ур╣╫ .venv\Scripts\python.exe
-    echo гКохткпп MyClaw-Setup.bat ╟╡в╟╩╥╬Ё║ё
+    echo [ERROR] н╢О©╫р╣О©╫ .venv\Scripts\python.exe
+    echo О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ MyClaw-Setup.bat О©╫О©╫в╟О©╫О©╫О©╫О©╫О©╫О©╫
     pause
     exit /b 1
 )
 if not exist ".env" (
-    echo [ERROR] .env ╡╩╢Фтзё╛гКохмЙЁи MyClaw-Setup.bat║ё
+    echo [ERROR] .env О©╫О©╫О©╫О©╫О©╫зёО©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ MyClaw-Setup.batО©╫О©╫
     pause
     exit /b 1
 )
 
-echo [1/3] мёж╧ожсп MyClaw ╫ЬЁл...
+echo [1/3] мёж╧О©╫О©╫О©╫О©╫ MyClaw О©╫О©╫О©╫О©╫...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop_myclaw.ps1" -CallerPid 0
 ping -n 3 127.0.0.1 >nul
 
-echo [2/3] жьпбфТ╤╞ MyClaw...
+echo [2/3] О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ MyClaw...
 call "%~dp0MyClaw.bat"
 
-echo [3/3] ╣х╢Щ╥ЧнЯиооъё╗вН╤Ю 60 цКё╘...
+echo [3/3] О©╫х╢О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ъёО©╫О©╫О©╫О©╫ 60 О©╫Кё╘...
 set /a TRIES=0
 
 :WAIT_LOOP
 set /a TRIES+=1
-curl.exe -s -m 2 http://127.0.0.1:8080/health 2>nul | find "ok" >nul
+curl.exe -s -m 2 http://127.0.0.1:8090/health 2>nul | find "ok" >nul
 if not errorlevel 1 goto ONLINE
 if %TRIES% geq 60 goto OFFLINE
 ping -n 2 127.0.0.1 >nul
 goto WAIT_LOOP
 
 :ONLINE
-echo [OK] MyClaw ╥ЧнЯряиооъё║
+echo [OK] MyClaw О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ъёО©╫
 goto END
 
 :OFFLINE
-echo [X] 60 цКдз╥ЧнЯн╢иооъё╛гК╡И©╢ logs\myclaw.log ее╡И║ё
+echo [X] 60 О©╫О©╫О©╫з╥О©╫О©╫О©╫н╢О©╫О©╫О©╫ъёО©╫О©╫О©╫И©╢ logs\myclaw.log О©╫е╡И║ё
 
 :END
 echo.

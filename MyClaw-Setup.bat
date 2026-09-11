@@ -127,7 +127,7 @@ echo [!] 警告: 未检测到配置文件 .env，正在创建最小模板...
     echo.
     echo # ===== Agent Config =====
     echo # Codex 认证使用本机 ChatGPT 登录态（~/.codex/auth.json），无需 API Key。
-    echo DEFAULT_WORKSPACE=D:\ForRunning\ForDev\myclaw
+    echo DEFAULT_WORKSPACE=%~dp0.
     echo APPROVAL_TIMEOUT=600
     echo.
     echo # ===== Access Control =====
@@ -135,7 +135,8 @@ echo [!] 警告: 未检测到配置文件 .env，正在创建最小模板...
     echo.
     echo # ===== Server Config =====
     echo HOST=0.0.0.0
-    echo PORT=8080
+    echo PORT=8090
+    echo INSTANCE_LOCK_PORT=48922
 ) > ".env"
 echo [OK] 已生成 .env 模板，请稍后编辑填入飞书凭据 (FEISHU_APP_ID / FEISHU_APP_SECRET)。
 

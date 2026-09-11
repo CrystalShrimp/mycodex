@@ -54,9 +54,9 @@ def ensure_single_instance(lock_port: int = 48921) -> None:
 # string "app.main:app" path, top-level code re-executes — without this
 # guard, ensure_single_instance() would run twice in the same process,
 # the second bind would fail, and sys.exit(0) would silently kill the
-# uvicorn worker before it could bind port 8080.
+# uvicorn worker before it could bind its port.
 if __name__ == "__main__":
-    ensure_single_instance()
+    ensure_single_instance(settings.instance_lock_port)
 
 # Build event dispatcher
 event_handler = (

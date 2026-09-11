@@ -59,7 +59,7 @@ uv run python -m app.main
 
 启动后日志会打印：默认 workspace、允许的用户列表、Claude CLI 路径、WS 连接状态、active profile。
 
-**验证**：浏览器打开 `http://localhost:8080/health`，应返回 `{"status":"ok","ws_connected":true,...}`。
+**验证**：浏览器打开 `http://localhost:8090/health`，应返回 `{"status":"ok","ws_connected":true,...}`。
 
 > 如果客户已经手工在飞书后台配过应用，可以跳过第 5 步，直接编辑 `.env` 填入飞书凭据（§4.1）。
 
@@ -110,7 +110,7 @@ uv run python -m app.main
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `MYCLAW_HOST` | `localhost` | hook 脚本回调 myclaw 的地址 |
-| `MYCLAW_PORT` | `8080` | hook 脚本回调端口（和 `PORT` 一致） |
+| `INSTANCE_LOCK_PORT` | `48922` | 单实例锁端口（与同机 myclaw 错开） |
 
 ### 4.6 访问控制
 
@@ -126,7 +126,7 @@ uv run python -m app.main
 |---|---|---|
 | `AUDIT_LOG_PATH` | `./logs/audit.log` | 审计日志位置（JSON-lines） |
 | `HOST` | `0.0.0.0` | FastAPI 监听地址 |
-| `PORT` | `8080` | FastAPI 监听端口 |
+| `PORT` | `8090` | FastAPI 监听端口（与同机 myclaw 的 8080 错开） |
 
 ---
 
@@ -227,7 +227,7 @@ Auto feishu 启动 Playwright 浏览器，模拟人工点击完成下面全部�
 - 客户机 Node.js ≥ 20（`node --version` 检查；Auto feishu 的 `engines.node` 要求）
 - 客户的飞书账号能登录 https://open.feishu.cn，且在企业管理员通过的租户内
 - 项目根目录已 `uv sync` 安装好 Python 依赖（Auto feishu 会启动 MyClaw 校验健康）
-- 端口 8080 未被占用（或修改 `.env` 的 `PORT` + `auto_feishu/config.json` 的 `localServiceUrl` 保持一致）
+- 端口 8090 未被占用（或修改 `.env` 的 `PORT` + `auto_feishu/config.json` 的 `localServiceUrl` 保持一致）
 
 #### 6.1.3 一键运行
 
@@ -284,7 +284,7 @@ npm run feishu:observe
 | `eventNames` | `["im.message.receive_v1", "card.action.trigger"]` | 订阅的事件 |
 | `publishAfterSetup` | `true` | 完成后自动创建版本并发布 |
 | `envPath` | `"../.env"` | 凭据写入位置（项目根目录 `.env`） |
-| `localServiceUrl` | `"http://127.0.0.1:8080/health"` | 本地服务健康检查 URL |
+| `localServiceUrl` | `"http://127.0.0.1:8090/health"` | 本地服务健康检查 URL |
 | `localServiceRootDir` | `".."` | 本地服务根目录（用于启动 MyClaw） |
 | `startLocalService` | `true` | 是否自动启动本地服务（事件订阅要求网关在线） |
 | `localServiceWaitMs` | `30000` | 本地服务启动等待上限 |
@@ -466,7 +466,7 @@ set https_proxy=
 set all_proxy=
 
 :: 检查端口是否被占
-curl.exe --silent --fail --max-time 1 http://127.0.0.1:8080/health >nul 2>&1
+curl.exe --silent --fail --max-time 1 http://127.0.0.1:8090/health >nul 2>&1
 if not errorlevel 1 (
     echo MyClaw is already running.
     timeout /t 3 >nul
@@ -487,7 +487,7 @@ if not errorlevel 1 (
 托盘版特点：
 
 - 用 Windows Job Object 绑定子进程，托盘退出时 MyClaw 服务也退出（不会留孤儿进程）
-- 启动时自动检查 `http://127.0.0.1:8080/health`，已运行则不重复启动
+- 启动时自动检查 `http://127.0.0.1:8090/health`，已运行则不重复启动
 - 通过 `Global\MyClawTray` 互斥锁防止多开
 - 异常退出写 `myclaw-tray-error.log` + 弹 MessageBox
 
@@ -536,7 +536,7 @@ APPROVAL_MODE=m                 # h=全自动 m=平衡 l=严格
 
 | # | 验证项 | 命令/操作 | 期望 |
 |---|---|---|---|
-| 1 | 健康检查 | `curl http://localhost:8080/health` | `{"status":"ok","ws_connected":true,...}` |
+| 1 | 健康检查 | `curl http://localhost:8090/health` | `{"status":"ok","ws_connected":true,...}` |
 | 2 | 飞书收消息 | 在飞书发 "hello" | 看到流式卡片回复 |
 | 3 | /status | 飞书发 `/status` | 看到 session_id、workspace、provider/level/mode |
 | 4 | /cd 列表 | 飞书发 `/cd`（不带参数） | 弹卡片列出本机历史工作区 |
@@ -581,7 +581,7 @@ ls config/settings_*.json
 
 检查顺序：
 
-1. `curl http://localhost:8080/health` 的 `ws_connected` 是否为 `true`
+1. `curl http://localhost:8090/health` 的 `ws_connected` 是否为 `true`
 2. 飞书开放平台 → 事件订阅 → 是否选了**长连接**模式
 3. 添加的事件是否是 `im.message.receive_v1`
 4. 应用是否已发布且通过审批
@@ -599,10 +599,10 @@ ls config/settings_*.json
 3. `myclaw.log` 里有没有 `Card action: type=... act=...` 日志
 4. 卡片模板里 `value.type` / `value.act` 是否和 router 里匹配
 
-### 9.5 端口 8080 被占用
+### 9.5 端口 8090 被占用
 
 ```bash
-netstat -ano | findstr :8080    # Windows
+netstat -ano | findstr :8090    # Windows
 ```
 
 要么 kill 占用进程，要么改 `.env` 的 `PORT`（同时改 `MYCLAW_PORT` 和 `auto_feishu/config.json` 的 `localServiceUrl` 保持一致）。

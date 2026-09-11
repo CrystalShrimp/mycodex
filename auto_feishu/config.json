@@ -13,7 +13,7 @@
                    ],
     "publishAfterSetup":  true,
     "envPath":  "../.env",
-    "localServiceUrl":  "http://127.0.0.1:8080/health",
+    "localServiceUrl":  "http://127.0.0.1:8090/health",
     "localServiceRootDir":  "..",
     "startLocalService":  true,
     "localServiceWaitMs":  30000,

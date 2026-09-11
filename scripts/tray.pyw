@@ -13,7 +13,22 @@ from ctypes import wintypes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-HEALTH_URL = "http://127.0.0.1:8080/health"
+
+
+def _env_port(default: int = 8090) -> int:
+    """Read PORT from the project .env so tray health checks never drift."""
+    try:
+        for line in (ROOT / ".env").read_text("utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("PORT="):
+                return int(line.split("=", 1)[1].strip())
+    except Exception:
+        pass
+    return default
+
+
+SERVICE_PORT = _env_port()
+HEALTH_URL = f"http://127.0.0.1:{SERVICE_PORT}/health"
 LOG_PATH = ROOT / "logs" / "myclaw.log"
 WM_TRAY = 0x8001
 WM_COMMAND = 0x0111
@@ -193,9 +208,9 @@ def get_health_detail() -> tuple[bool, str]:
             if response.status == 200:
                 data = json.loads(response.read().decode('utf-8'))
                 ws = "🟢 已连接" if data.get("ws_connected") else "🔴 未连接"
-                return True, f"✅ MyClaw 后端服务运行正常 (端口 8080)\n飞书长连接: {ws}"
+                return True, f"✅ MyCodex 后端服务运行正常 (端口 {SERVICE_PORT})\n飞书长连接: {ws}"
     except Exception as e:
-        return False, f"❌ 后端服务未响应 (8080 端口): {e}\n详情请查看 myclaw.log 日志。"
+        return False, f"❌ 后端服务未响应 ({SERVICE_PORT} 端口): {e}\n详情请查看 myclaw.log 日志。"
     return False, "❌ 后端服务未响应，请查看日志。"
 
 
@@ -258,7 +273,7 @@ def stop_server() -> None:
         job_handle = None
 
 
-def message(text: str, title: str = "myclaw") -> None:
+def message(text: str, title: str = "mycodex") -> None:
     user32.MessageBoxW(None, text, title, 0x40)
 
 
@@ -267,7 +282,7 @@ def show_menu(hwnd: int) -> None:
     user32.AppendMenuW(menu, 0, ID_STATUS, "查看状态")
     user32.AppendMenuW(menu, 0, ID_LOG, "打开日志")
     user32.AppendMenuW(menu, 0x800, 0, None)
-    user32.AppendMenuW(menu, 0, ID_EXIT, "退出 myclaw")
+    user32.AppendMenuW(menu, 0, ID_EXIT, "退出 mycodex")
     point = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(point))
     user32.SetForegroundWindow(hwnd)
@@ -281,13 +296,13 @@ def window_proc(hwnd, msg, wparam, lparam):
             show_menu(hwnd)
         elif lparam == WM_LBUTTONDBLCLK:
             is_ok, detail = get_health_detail()
-            message(detail, "myclaw 状态确认" if is_ok else "myclaw 异常提醒")
+            message(detail, "mycodex 状态确认" if is_ok else "mycodex 异常提醒")
         return 0
     if msg == WM_COMMAND:
         command = wparam & 0xFFFF
         if command == ID_STATUS:
             is_ok, detail = get_health_detail()
-            message(detail, "myclaw 状态确认" if is_ok else "myclaw 异常提醒")
+            message(detail, "mycodex 状态确认" if is_ok else "mycodex 异常提醒")
         elif command == ID_LOG and LOG_PATH.exists():
             os.startfile(LOG_PATH)
         elif command == ID_EXIT:
@@ -302,24 +317,24 @@ def window_proc(hwnd, msg, wparam, lparam):
 
 
 def main() -> None:
-    mutex = kernel32.CreateMutexW(None, True, "Global\\MyClawTraySingleInstance")
+    mutex = kernel32.CreateMutexW(None, True, "Global\\MyCodexTraySingleInstance")
     if kernel32.GetLastError() == 183:
-        message("MyClaw 托盘程序已在后台运行中，无需重复打开。", "提示")
+        message("MyCodex 托盘程序已在后台运行中，无需重复打开。", "提示")
         return
     start_server()
     callback = WNDPROC(window_proc)
     cls = WNDCLASS()
     cls.lpfnWndProc = callback
-    cls.lpszClassName = "MyClawTrayWindow"
+    cls.lpszClassName = "MyCodexTrayWindow"
     cls.hInstance = kernel32.GetModuleHandleW(None)
     user32.RegisterClassW(ctypes.byref(cls))
-    hwnd = user32.CreateWindowExW(0, cls.lpszClassName, "myclaw", 0, 0, 0, 0, 0, None, None, cls.hInstance, None)
+    hwnd = user32.CreateWindowExW(0, cls.lpszClassName, "mycodex", 0, 0, 0, 0, 0, None, None, cls.hInstance, None)
     nid.cbSize = ctypes.sizeof(nid)
     nid.hWnd, nid.uID = hwnd, 1
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP
     nid.uCallbackMessage = WM_TRAY
     nid.hIcon = load_custom_icon()
-    nid.szTip = "myclaw"
+    nid.szTip = "mycodex"
     shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid))
     msg = wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
@@ -333,4 +348,4 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         (ROOT / "myclaw-tray-error.log").write_text(traceback.format_exc(), encoding="utf-8")
-        message(str(exc), "myclaw 启动失败")
+        message(str(exc), "mycodex 启动失败")
