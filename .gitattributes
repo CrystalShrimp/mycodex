@@ -1,0 +1,6 @@
+# Windows script files MUST keep CRLF — cmd.exe misparses LF-only batch
+# files (commands split mid-way through multibyte characters).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh text eol=lf
