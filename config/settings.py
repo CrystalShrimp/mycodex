@@ -10,10 +10,9 @@ class Settings(BaseSettings):
     feishu_verification_token: str = ""
     feishu_encrypt_key: str = ""
 
-    # Claude Code CLI
-    claude_cli_path: str = "claude"
-    claude_default_model: str = "sonnet"
-    claude_data_dir: str = ""
+    # Codex CLI
+    codex_cli_path: str = "codex"
+    codex_default_model: str = ""
 
     # Workspace
     default_workspace: str = "D:\\projects"
@@ -22,8 +21,7 @@ class Settings(BaseSettings):
     approval_timeout: int = 600           # Model selection card timeout (10 min)
     tool_approval_timeout: int = 1800     # Tool execution card timeout (30 min)
     tool_approval_warn_seconds: int = 300 # Warn 5 min before tool approval expires
-    approval_mode: str = "m"  # h=高风险(全审批) m=中(高风险审批) l=低风险(全自动放行)
-    approval_rules_path: str = "./config/approval_rules.json"
+    approval_mode: str = "m"  # h=严格(read-only沙箱) m=平衡(workspace-write) l=全自动(无沙箱)
 
     # Access control
     allowed_users: str = ""
@@ -34,9 +32,6 @@ class Settings(BaseSettings):
     # Context monitoring
     context_warn_percent: int = 80       # warn when context usage exceeds this %
     context_critical_percent: int = 95   # critical threshold, suggest /new
-
-    # Compact feature (summarize conversation and continue in new session)
-    compact_enabled: bool = True
 
     # Server
     host: str = "0.0.0.0"

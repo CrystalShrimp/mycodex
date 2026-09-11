@@ -13,10 +13,10 @@ logger = logging.getLogger("myclaw.preferences")
 
 @dataclass
 class UserPreferences:
-    """Myclaw runtime choices kept outside Claude conversation state."""
+    """Myclaw runtime choices kept outside codex thread state."""
 
-    model: str = ""  # provider profile, for example glm or kimi
-    level: str = ""  # haiku, sonnet or opus
+    model: str = ""  # codex model slug, for example gpt-5.6-terra
+    level: str = ""  # reasoning effort: low/medium/high/xhigh/max
     mode: str = ""   # h, m or l
 
     @property
@@ -65,9 +65,9 @@ class PreferencesManager:
             ws_dir = Path(workspace).resolve()
             if not ws_dir.exists() or not ws_dir.is_dir():
                 return None
-            claude_dir = ws_dir / ".claude"
-            claude_dir.mkdir(parents=True, exist_ok=True)
-            return claude_dir / "myclaw_config.json"
+            myclaw_dir = ws_dir / ".myclaw"
+            myclaw_dir.mkdir(parents=True, exist_ok=True)
+            return myclaw_dir / "config.json"
         except Exception:
             return None
 

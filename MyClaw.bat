@@ -1,30 +1,31 @@
 @echo off
 setlocal
+chcp 65001 >nul
 cd /d "%~dp0"
 
 if not exist .env (
-    echo [ERROR] .env ÎÄ¼þ²»´æÔÚ£¡
-    echo ÇëÏÈ¸´ÖÆ examples\.env.example Îª .env ²¢ÌîÈë·ÉÊéÆ¾¾Ý¡£
+    echo [ERROR] .env æ–‡ä»¶ä¸å­˜åœ¨ï¼
+    echo è¯·å…ˆè¿è¡Œ MyClaw-Setup.bat ç”Ÿæˆæ¨¡æ¿ï¼Œå†å¡«å…¥é£žä¹¦å‡­æ®ã€‚
     pause
     exit /b 2
 )
 
 if not exist ".venv\Scripts\pythonw.exe" (
-    echo [ERROR] Î´ÕÒµ½ .venv\Scripts\pythonw.exe
-    echo ÇëÏÈÔËÐÐ MyClaw-Setup.bat£¨»òÖ´ÐÐ uv sync£©°²×° Python »·¾³¡£
+    echo [ERROR] æœªæ‰¾åˆ° .venv\Scripts\pythonw.exe
+    echo è¯·å…ˆè¿è¡Œ MyClaw-Setup.batï¼ˆè‡ªåŠ¨æ‰§è¡Œ uv syncï¼‰å®‰è£… Python ä¾èµ–ã€‚
     pause
     exit /b 3
 )
 
-echo [INFO] ÇåÀí¿ÉÄÜ´æÔÚµÄ²ÐÁô½ø³Ì...
+echo [INFO] åœæ­¢å¯èƒ½å­˜åœ¨çš„æ—§è¿›ç¨‹...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop_myclaw.ps1" -CallerPid 0
 ping -n 3 127.0.0.1 >nul
 
-echo [INFO] Æô¶¯ MyClaw ÍÐÅÌÓë·þÎñ...
-REM ·ÉÊéÓòÃûÖ±Á¬£º·þÎñ½ø³Ì²»×ßÂ·ÓÉ´úÀí£¨ÅäºÏ tray ÄÚµÄ´úÀí°þÀëË«±£ÏÕ£©
+echo [INFO] æ­£åœ¨å¯åŠ¨ MyClaw åŽå°æœåŠ¡...
+REM åŽå°è¿›ç¨‹ç›´æŽ¥ç»§æ‰¿çŽ¯å¢ƒå˜é‡è·¯å¾„ï¼Œç”±æ‰˜ç›˜è„šæœ¬çš„çª—å£è¿›ç¨‹è·¯å¾„ä»£ç†ï¼ˆé¿å…åŒå‡»ï¼‰ã€‚
 set "NO_PROXY=open.feishu.cn,.feishu.cn,msg-frontier.feishu.cn,.larksuite.com,.larkoffice.com,localhost,127.0.0.1"
 
 start "" "%~dp0.venv\Scripts\pythonw.exe" "%~dp0scripts\tray.pyw"
 
-echo [OK] ÒÑÆô¶¯¡£ÍÐÅÌÍ¼±êÉÔºó³öÏÖ£¬Ê×´ÎÆô¶¯Ô¼Ðè 30 Ãë¡£
+echo [OK] å¯åŠ¨æŒ‡ä»¤å·²å‘å‡ºï¼ˆæ‰˜ç›˜å›¾æ ‡ç¨åŽå‡ºçŽ°ï¼Œé¦–æ¬¡å¯åŠ¨çº¦ 30 ç§’ï¼‰ã€‚
 ping -n 4 127.0.0.1 >nul

@@ -1,8 +1,16 @@
-"""Claude Code CLI subprocess manager — interactive mode.
+"""Codex CLI subprocess manager — per-message exec with native threads.
 
-Spawns `claude` with --print --input-format stream-json and keeps
-the process alive.  User messages are written to stdin as JSONL
-and responses are read from stdout by a background reader task.
+Each Feishu message spawns one ``codex exec --json`` process in the user's
+workspace. Multi-turn continuity relies on codex's own persisted sessions
+(~/.codex/sessions): when the session object carries a thread_id we respawn
+via ``codex exec resume <thread_id>``. Auth is inherited from the machine's
+ChatGPT login (~/.codex/auth.json) — no API keys involved.
+
+Approval modes map onto codex sandbox policy (via -c overrides so the
+same code path works for fresh runs and `exec resume`):
+    h → sandbox_mode=read-only                          (writes impossible)
+    m → sandbox_mode=workspace-write + approval never   (workspace-scoped writes)
+    l → --dangerously-bypass-approvals-and-sandbox      (full access)
 """
 from __future__ import annotations
 
@@ -18,54 +26,29 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from config.settings import settings
+from app.feishu.cards import (
+    build_progress_card,
+    build_error_card,
+)
+from app.feishu.client import feishu_client
+from app.models.schemas import AgentResult, ToolCallRecord
+from app.audit.logger import audit_logger
+from app.agent.codex_sessions import latest_thread_for_workspace
 
-def _summarize_tool_args(name: str, args: dict) -> str:
-    """One-line summary of what a tool is doing, for the progress card."""
-    if not isinstance(args, dict):
-        return ""
-    if name == "Bash":
-        cmd = (args.get("command") or "").strip()
-        if not cmd:
-            return ""
-        first = cmd.split("&&")[0].split("|")[0].split(";")[0].strip()
-        return f"`{first[:80]}`" if len(first) <= 80 else f"`{first[:77]}…`"
-    if name in ("Read", "Write", "Edit", "NotebookEdit"):
-        path = args.get("file_path") or ""
-        if not path:
-            return ""
-        leaf = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
-        return f"`{leaf}`"
-    if name == "Grep":
-        pat = (args.get("pattern") or "").strip()
-        return f"`{pat[:40]}`" if pat else ""
-    if name == "Glob":
-        pat = (args.get("pattern") or "").strip()
-        return f"`{pat[:40]}`" if pat else ""
-    if name in ("TaskCreate", "TaskUpdate"):
-        subj = (args.get("subject") or "").strip()
-        return f"`{subj[:40]}`" if subj else ""
-    return ""
+logger = logging.getLogger("myclaw.cli_loop")
 
-
-def _extract_warning_summary(attachment: dict) -> str:
-    """Short human-readable summary from an attachment event (hook error etc.)."""
-    name = attachment.get("hookName") or attachment.get("type") or "attachment"
-    stderr = (attachment.get("stderr") or "").strip()
-    # First non-empty line of stderr is usually the cause
-    first_line = next((ln for ln in stderr.splitlines() if ln.strip()), "")
-    if first_line:
-        return f"{name}: {first_line[:120]}"
-    return name
+# Map codex_thread_id -> {open_id, approval_mode}
+session_registry: dict[str, dict] = {}
 
 
 def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
     """Kill a subprocess and ALL its descendants.
 
-    Claude CLI spawns deep trees (claude → bash → python → WINWORD/LibreOffice).
-    On Windows, TerminateProcess only kills the direct child, leaving orphans
-    that hold GUI modal dialogs (e.g. Word's "save changes?" prompt) open
-    forever. Use taskkill /T (tree) on Windows or killpg on Unix to tear down
-    the whole subtree.
+    Codex spawns deep trees (codex → pwsh → python → ...). On Windows,
+    TerminateProcess only kills the direct child, leaving orphans that hold
+    GUI dialogs open forever. Use taskkill /T (tree) on Windows or killpg on
+    Unix to tear down the whole subtree.
     """
     if proc.returncode is not None:
         return
@@ -89,217 +72,77 @@ def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
         except ProcessLookupError:
             pass
 
-from config.settings import settings
-from app.feishu.cards import (
-    build_progress_card,
-    build_error_card,
-)
-from app.feishu.client import feishu_client
-from app.models.schemas import AgentResult, ToolCallRecord
-from app.audit.logger import audit_logger
-from app.profiles import load_profile_env, MYCLAW_ROOT, CONFIG_DIR
 
-logger = logging.getLogger("myclaw.cli_loop")
-
-# Map claude_session_id -> {open_id, approval_mode}
-# Used by hooks router to look up user + approval mode for tool cards.
-session_registry: dict[str, dict] = {}
-
-
-# ---- helpers ----
-
-
-def _build_env(workspace: str, profile_name: str = "") -> dict:
-    env = os.environ.copy()
-    for key in ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT",
-                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]:
-        env.pop(key, None)
-    # Inject active profile env vars (ANTHROPIC_BASE_URL, AUTH_TOKEN,
-    # model names) per-process so concurrent claude invocations under
-    # different profiles don't fight over ~/.claude/settings.json.
-    env.update(load_profile_env(profile_name))
-
-    if os.name == "nt" and "CLAUDE_CODE_GIT_BASH_PATH" not in env:
-        for candidate in [
-            r"D:\Git\bin\bash.exe",
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Git\bin\bash.exe",
-        ]:
-            if os.path.isfile(candidate):
-                env["CLAUDE_CODE_GIT_BASH_PATH"] = candidate
-                break
-    return env
+def _summarize_item_args(item: dict) -> str:
+    """One-line summary of a codex item, for the progress card."""
+    itype = item.get("type", "")
+    if itype == "command_execution":
+        cmd = (item.get("command") or "").strip()
+        if not cmd:
+            return ""
+        first = cmd.split("&&")[0].split("|")[0].split(";")[0].strip()
+        first = first.strip('"').strip("'")
+        return f"`{first[:80]}`" if len(first) <= 80 else f"`{first[:77]}…`"
+    if itype == "file_change":
+        paths = [c.get("path", "") for c in item.get("changes") or [] if isinstance(c, dict)]
+        leafs = [p.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] for p in paths if p]
+        if not leafs:
+            return ""
+        joined = ", ".join(leafs[:3]) + (" …" if len(leafs) > 3 else "")
+        return f"`{joined[:80]}`"
+    return ""
 
 
-def _write_myclaw_settings() -> None:
-    """幂等覆写 config/claude_settings.json — myclaw 拥有这个文件，不合并。
-
-    子进程通过 --settings 加载它，优先级高于所有 settings.json 层级。
-    每次 spawn 前覆写，自愈：即使用户手改过，下次 spawn 恢复预期配置。
-    """
-    settings_file = CONFIG_DIR / "claude_settings.json"
-    settings_file.parent.mkdir(parents=True, exist_ok=True)
-    hook_script = MYCLAW_ROOT / "scripts" / "hooks" / "pre_tool_use.py"
-    payload = {
-        "permissions": {
-            "allow": [
-                "Bash(*)", "Write(*)", "Edit(*)", "NotebookEdit(*)",
-                "Read(*)", "Glob(*)", "Grep(*)", "WebSearch", "WebFetch",
-            ],
-            "deny": [],
-        },
-        "hooks": {
-            "PreToolUse": [{
-                "matcher": "",
-                "hooks": [{
-                    "type": "command",
-                    "command": f'python "{hook_script}"',
-                    "timeout": 1800,
-                }],
-            }],
-        },
-        "skipDangerousModePermissionPrompt": True,
-    }
-    settings_file.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False), "utf-8",
-    )
+_ITEM_TOOL_NAMES = {
+    "command_execution": "Bash",
+    "file_change": "Edit",
+    "mcp_tool_call": "MCP",
+    "web_search": "WebSearch",
+}
 
 
-def _strip_myclaw_hooks(workspace: str) -> None:
-    """移除 workspace/.claude/settings.local.json 里 myclaw 注入过的 hook 条目。
+class CodexCLILoop:
+    """Manage one ``codex exec`` process per in-flight message per user.
 
-    按 hook script 路径子串匹配；只清自己注入的，不动用户其他配置。
-    文件清空到 {} 才删，否则保留（用户可能还有 permissions 等 key）。
-    """
-    from pathlib import Path
-
-    f = Path(workspace) / ".claude" / "settings.local.json"
-    if not f.exists():
-        return
-    try:
-        data = json.loads(f.read_text("utf-8"))
-    except Exception:
-        return
-    pre = data.get("hooks", {}).get("PreToolUse")
-    if not pre:
-        return
-    needle = str(MYCLAW_ROOT / "scripts" / "hooks" / "pre_tool_use.py")
-    kept = [
-        e for e in pre
-        if not any(needle in h.get("command", "") for h in e.get("hooks", []))
-    ]
-    if kept == pre:
-        return
-    if kept:
-        data.setdefault("hooks", {})["PreToolUse"] = kept
-    else:
-        data.get("hooks", {}).pop("PreToolUse", None)
-        if not data.get("hooks"):
-            data.pop("hooks", None)
-    if data == {}:
-        f.unlink()
-    else:
-        f.write_text(json.dumps(data, indent=2, ensure_ascii=False), "utf-8")
-    logger.info("Stripped myclaw hooks from %s", f)
-
-
-async def _ensure_hook_config(workspace: str) -> None:
-    """每次 spawn 前调用：写 myclaw 自有 settings + 清 workspace 旧注入。
-
-    第三步清理 myclaw 项目自己的 .claude/settings.local.json（旧版本代码
-    注入 hook 的地方）。当前该文件只有 permissions 没 hook，是 no-op；保留
-    这步以应对历史残留。按脚本路径匹配，不会误删开发者自配的 hook。
-    """
-    _write_myclaw_settings()
-    _strip_myclaw_hooks(workspace)
-    _strip_myclaw_hooks(str(MYCLAW_ROOT))
-
-
-def _has_native_session_history(workspace: str) -> bool:
-    """检查指定工作区目录在 Claude Code 中是否有已存在的物理历史 Session 文件。"""
-    try:
-        ws_path = Path(workspace).resolve()
-        # 1. 检查工作区本地是否有 .claude/ 目录且非空
-        local_claude = ws_path / ".claude"
-        if local_claude.is_dir() and any(local_claude.iterdir()):
-            return True
-
-        # 2. 检查全局 ~/.claude/projects/ 下是否有该工作区的历史记录
-        home_claude = Path.home() / ".claude" / "projects"
-        if home_claude.is_dir():
-            sanitized = str(ws_path).replace(":", "").replace("\\", "_").replace("/", "_")
-            for proj_dir in home_claude.iterdir():
-                if proj_dir.is_dir() and sanitized.lower() in proj_dir.name.lower():
-                    if any(proj_dir.glob("*.jsonl")):
-                        return True
-    except Exception as e:
-        logger.debug("Error checking workspace history for %s: %s", workspace, e)
-    return False
-
-
-# ---- main class ----
-
-
-class ClaudeCLILoop:
-    """Manage a long-lived Claude Code CLI subprocess per user.
-
-    The process runs with --print --input-format stream-json so it stays
-    alive between messages.  Each user message is written to stdin as a
-    JSONL ``user`` event and the background reader resolves the matching
-    future when a ``result`` event arrives.
-
-    Each pending message has its own *msg_state* dict (text accumulator,
-    tools list, streaming card id) stored alongside the future, so
-    concurrent / multi-turn state never leaks between messages.
+    Per-user asyncio.Lock serializes whole message executions: a follow-up
+    message sent while a task runs simply waits, mirroring the old
+    long-lived-stdin queue. Reader task resolves the message future on
+    ``turn.completed`` / ``turn.failed`` / process exit.
     """
 
     def __init__(self) -> None:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
-        self._stdin_writers: dict[str, asyncio.StreamWriter] = {}
         # open_id -> 群聊 chat_id（空 = 私聊）。崩溃告警等后续发送用它路由。
         self._chat_targets: dict[str, str] = {}
-        # list of (future, msg_state) — one entry per pending message
-        self._response_futures: dict[str, list[tuple[asyncio.Future, dict]]] = {}
+        self._exec_locks: dict[str, asyncio.Lock] = {}
         self._reader_tasks: dict[str, asyncio.Task] = {}
-        self._start_locks: dict[str, asyncio.Lock] = {}
         self._last_error: str = ""
-        # Store recent AgentResult history per open_id for /notes command lookup
         self._last_results: dict[str, AgentResult] = {}
         self._task_history: dict[str, dict[str, AgentResult]] = {}
 
     # ---- public API ----
 
     def get_last_result(self, open_id: str) -> AgentResult | None:
-        """Get the most recent task execution result for a user."""
         return self._last_results.get(open_id)
 
     def get_task_result(self, open_id: str, task_id: str) -> AgentResult | None:
-        """Get a specific task execution result by task_id for a user."""
         user_history = self._task_history.get(open_id, {})
         if task_id in user_history:
             return user_history[task_id]
-        # Global fallback search across all users if task_id matches
         for history in self._task_history.values():
             if task_id in history:
                 return history[task_id]
         return None
 
     def is_running(self, open_id: str) -> bool:
-        """Check if there's a running CLI process that can still accept messages."""
+        """True while a codex exec process is alive for this user."""
         proc = self._processes.get(open_id)
-        writer = self._stdin_writers.get(open_id)
-        return (
-            proc is not None
-            and proc.returncode is None
-            and writer is not None
-            and not writer.is_closing()
-        )
+        return proc is not None and proc.returncode is None
 
-    def get_session_id_for_user(self, open_id: str) -> str | None:
-        """Get the Claude session_id for a currently running user process."""
-        for claude_sid, info in session_registry.items():
+    def get_thread_id_for_user(self, open_id: str) -> str | None:
+        for thread_id, info in session_registry.items():
             if info.get("open_id") == open_id:
-                return claude_sid
+                return thread_id
         return None
 
     async def send_and_wait(
@@ -309,68 +152,76 @@ class ClaudeCLILoop:
         workspace: str,
         model: str | None = None,
         approval_mode: str = "m",
-        profile_name: str = "",
-        claude_session_id: str | None = None,
-        resume_session_id: str | None = None,
+        effort: str = "",
+        codex_thread_id: str | None = None,
+        resume_thread_id: str | None = None,
         chat_id: str = "",
     ) -> AgentResult:
-        """Send a prompt to the user's interactive Claude process.
+        """Spawn codex exec for one message and wait for the turn to finish.
 
-        Starts the process on first call (or after a crash).  Session
-        handling uses claude's native flags:
-
-        - *resume_session_id*  → ``claude --resume <id>`` (specific session)
-        - *claude_session_id*  → ``claude --resume <id>``    (persisted session)
-        - neither              → fresh session
+        Thread handling:
+        - *resume_thread_id* → ``codex exec resume <id>``  (explicit /resume)
+        - *codex_thread_id*  → ``codex exec resume <id>``  (persisted thread)
+        - "__continue__"     → resolve newest thread in workspace, else fresh
+        - neither            → fresh thread
         """
-        lock = self._start_locks.setdefault(open_id, asyncio.Lock())
-        chosen = model or settings.claude_default_model
-
+        lock = self._exec_locks.setdefault(open_id, asyncio.Lock())
         async with lock:
-            # Start on first use or after an actual process failure. A healthy
-            # stream-json process remains attached to the Feishu user so
-            # subsequent messages stay in the same native Claude session.
-            if not self.is_running(open_id):
-                await self._teardown_previous(open_id)
-                await self._start_process(
-                    open_id, workspace, model, approval_mode, profile_name,
-                    claude_session_id, resume_session_id,
-                )
+            # A previous process may still be registered after a crash exit;
+            # make sure stale state is gone before spawning.
+            old = self._processes.pop(open_id, None)
+            if old is not None and old.returncode is None:
+                _kill_process_tree(old)
 
-            writer = self._stdin_writers.get(open_id)
-            if not writer or writer.is_closing():
-                return self._error_result(
-                    prompt, "stdin writer not available (process may have crashed)",
-                )
+            workspace_path = Path(workspace)
+            if not workspace_path.is_dir():
+                return self._error_result(prompt, f"工作区不存在: {workspace}")
+            workspace = str(workspace_path.resolve())
 
-            # Per-message state: single persistent progress card, event-driven updates.
-            # Design rationale: previous design opened a new card every 3000 chars of
-            # streamed text, producing 4+ fragmented cards per long task. Now one card
-            # transits running → (retrying/awaiting) → completed/failed/cancelled,
-            # PATCHed only on meaningful events (tool_use / attachment / api_retry / result).
+            chosen = model or settings.codex_default_model
+
+            # Resolve the "__continue__" sentinel to a concrete thread id.
+            effective_thread = resume_thread_id or ""
+            if not effective_thread and codex_thread_id == "__continue__":
+                found = latest_thread_for_workspace(workspace)
+                if found:
+                    effective_thread = found[0]
+                    logger.info("Resolved __continue__ to thread %s", effective_thread)
+            elif not effective_thread and codex_thread_id:
+                effective_thread = codex_thread_id
+
+            try:
+                proc, stdin_writer = await self._spawn(
+                    open_id, workspace, chosen, approval_mode, effort,
+                    effective_thread, prompt,
+                )
+            except FileNotFoundError as exc:
+                return self._error_result(prompt, str(exc))
+            except NotADirectoryError as exc:
+                return self._error_result(prompt, str(exc))
+
+            self._chat_targets[open_id] = chat_id
+
             msg_state = {
-                # Card identity
                 "card_id": "",
                 "model": chosen,
-                # Progress counters
                 "step": 0,
                 "tool_counts": {},
                 "warnings": 0,
                 "last_warning": "",
                 "started_at": asyncio.get_event_loop().time(),
                 "last_patch_at": 0.0,
-                # Tool/thinking display state
                 "current_tool": "",
                 "current_tool_args": "",
-                "current_text": "",      # text accumulated since last tool_use boundary
-                "last_text": "",         # snapshot of last completed text block
+                "current_text": "",
+                "last_text": "",
+                "tools": [],
             }
 
-            # Create the single progress card (running state, empty body).
-            # 群聊发起的任务，进度卡片发回群里（chat_id 路由）。
-            self._chat_targets[open_id] = chat_id
             try:
-                card = build_progress_card(chosen, "running")
+                card = build_progress_card(
+                    self._model_label(chosen, effort), "running",
+                )
                 if chat_id:
                     card_msg = await feishu_client.send_card(chat_id, card, is_chat=True)
                 else:
@@ -379,150 +230,90 @@ class ClaudeCLILoop:
             except Exception as e:
                 logger.warning("Failed to create progress card: %s", e)
 
-            # Queue future + msg_state BEFORE writing stdin so the reader
-            # always finds msg_state for the very first stream_event.
             future: asyncio.Future[AgentResult] = asyncio.get_event_loop().create_future()
-            self._response_futures.setdefault(open_id, []).append((future, msg_state))
 
-            # Write JSONL user message to stdin
+            # Write prompt to stdin then close it — codex reads instructions
+            # from stdin when invoked with the `-` positional.
             try:
-                payload = json.dumps({
-                    "type": "user",
-                    "message": {"role": "user", "content": prompt},
-                }) + "\n"
-                writer.write(payload.encode())
-                await writer.drain()
+                stdin_writer.write(prompt.encode("utf-8"))
+                await stdin_writer.drain()
+                stdin_writer.close()
             except (ConnectionResetError, BrokenPipeError, OSError) as exc:
                 logger.warning("Stdin writer broken for open_id %s: %s", open_id, exc)
-                self._cleanup(open_id)
+                _kill_process_tree(proc)
                 return self._error_result(prompt, f"进程通信中断 ({type(exc).__name__}): {exc}")
 
+            task = asyncio.create_task(
+                self._read_loop(open_id, proc, approval_mode, future, msg_state),
+            )
+            self._reader_tasks[open_id] = task
+
         return await future
-
-    async def _teardown_previous(self, open_id: str) -> None:
-        """Tear down any previous process for this user and wait for its
-        reader task to finish cleanup.
-
-        Must run before _start_process when starting a fresh process: the
-        old reader's _cleanup pops state keyed by open_id, so if we let it
-        run concurrently with a new _start_process it would wipe the new
-        process's entries.
-        """
-        old_task = self._reader_tasks.pop(open_id, None)
-        old_proc = self._processes.pop(open_id, None)
-        self._stdin_writers.pop(open_id, None)
-
-        if old_proc is not None and old_proc.returncode is None:
-            _kill_process_tree(old_proc)
-
-        if old_task is not None and not old_task.done():
-            try:
-                await asyncio.wait_for(old_task, timeout=3.0)
-            except asyncio.TimeoutError:
-                if old_proc is not None and old_proc.returncode is None:
-                    _kill_process_tree(old_proc)
-                old_task.cancel()
-            except asyncio.CancelledError:
-                pass
 
     def cancel_by_user(self, open_id: str) -> bool:
         """Kill the running process for a user (synchronous)."""
         proc = self._processes.pop(open_id, None)
-        # Resolve any pending futures as cancelled
-        entries = self._response_futures.pop(open_id, [])
-        for future, _ in entries:
-            if not future.done():
-                future.set_result(self._error_result("", "process terminated", "cancelled"))
-
-        # Cancel reader task (it will run _cleanup in its finally block)
         task = self._reader_tasks.pop(open_id, None)
         if task and not task.done():
             task.cancel()
-
-        self._stdin_writers.pop(open_id, None)
-
         if proc and proc.returncode is None:
             _kill_process_tree(proc)
             return True
         return False
 
     async def cancel_and_wait(self, open_id: str) -> bool:
-        """Kill process and wait for reader task cleanup.
-
-        Use this in async contexts where you need to start a new process
-        immediately afterwards (e.g. /model, /stop auto-continue).
-        """
         cancelled = self.cancel_by_user(open_id)
-        # Small delay for reader task to process EOF and run _cleanup
         await asyncio.sleep(0.3)
         return cancelled
 
-    def cancel(self, task_id: str) -> bool:
-        """Not used (open_id based).  Kept for compatibility."""
-        logger.warning("cancel(task_id) is deprecated; use cancel_by_user(open_id)")
-        return False
-
     # ---- internal ----
 
-    async def _start_process(
-        self, open_id: str, workspace: str, model: str | None,
-        approval_mode: str, profile_name: str = "",
-        claude_session_id: str | None = None,
-        resume_session_id: str | None = None,
-    ) -> None:
-        chosen = model or settings.claude_default_model
-        cli_path = settings.claude_cli_path
+    @staticmethod
+    def _model_label(model: str, effort: str) -> str:
+        return f"{model} · {effort}" if effort else (model or "codex")
 
-        workspace_path = Path(workspace)
-        if not workspace_path.is_dir():
-            raise NotADirectoryError(f"Workspace is not a directory: {workspace}")
-        workspace = str(workspace_path.resolve())
-
-        # shutil.which resolves bare names ("claude") to a real path,
-        # picking up .cmd/.bat/.exe on Windows that CreateProcess alone
-        # won't auto-append. Without this, asyncio.create_subprocess_exec
-        # raises FileNotFoundError (WinError 2) for "claude".
+    async def _spawn(
+        self, open_id: str, workspace: str, model: str,
+        approval_mode: str, effort: str, thread_id: str, prompt: str,
+    ) -> tuple[asyncio.subprocess.Process, asyncio.StreamWriter]:
+        cli_path = settings.codex_cli_path
+        # shutil.which resolves bare names ("codex") to the npm .cmd shim on
+        # Windows that CreateProcess alone won't auto-append.
         resolved = shutil.which(cli_path)
         if not resolved:
             raise FileNotFoundError(
-                f"Claude CLI not found: {cli_path!r}. "
-                f"Install it (`npm i -g @anthropic-ai/claude-code`) or set "
-                f"CLAUDE_CLI_PATH to an absolute path."
+                f"Codex CLI not found: {cli_path!r}. "
+                f"Install it (`npm i -g @openai/codex`) or set "
+                f"CODEX_CLI_PATH to an absolute path."
             )
 
-        args = [
-            resolved,
-            "--print",
-            "--output-format", "stream-json",
-            "--input-format", "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-            # 隔离 desktop 端 ~/.claude/settings.json：只加载 project+local 级，
-            # 再用 --settings 显式叠加 myclaw 自有配置（hook + permissions），
-            # --settings 优先级最高，覆盖一切重叠 key。
-            "--setting-sources", "project,local",
-            "--settings", str(CONFIG_DIR / "claude_settings.json"),
-        ]
-        # Resume the exact persisted session after a real process restart.
-        # The sentinel is reserved for the explicit /continue command.
-        if resume_session_id:
-            args.extend(["--resume", resume_session_id])
-        elif claude_session_id == "__continue__":
-            if _has_native_session_history(workspace):
-                args.append("--continue")
-            else:
-                logger.info("Workspace %s has no native session history, starting fresh clean session.", workspace)
-        elif claude_session_id:
-            args.extend(["--resume", claude_session_id])
-        # Low-risk auto mode (formerly "h"): skip myclaw's hook entirely
-        # and let claude's native bypassPermissions handle everything.
+        # Build args. `codex exec resume` is a subcommand with its OWN flag
+        # set: it accepts --json/--skip-git-repo-check/-m/-c but NOT -C/-s/
+        # --approve-for-me. Sandbox therefore goes through -c overrides,
+        # which work identically on both fresh and resume paths.
+        args = [resolved, "exec", "--json", "--skip-git-repo-check"]
+        if thread_id:
+            args.extend(["resume", thread_id])
+        else:
+            args.extend(["-C", workspace])
+        # Approval mode → sandbox policy (see module docstring).
         if approval_mode == "l":
-            args.extend(["--permission-mode", "bypassPermissions"])
-        if chosen:
-            args.extend(["--model", chosen])
+            args.append("--dangerously-bypass-approvals-and-sandbox")
+        elif approval_mode == "h":
+            args.extend(["-c", 'sandbox_mode="read-only"', "-c", 'approval_policy="never"'])
+        else:
+            args.extend(["-c", 'sandbox_mode="workspace-write"', "-c", 'approval_policy="never"'])
+        if model:
+            args.extend(["-m", model])
+        if effort:
+            # -c value is parsed as TOML — quotes make it a string.
+            args.extend(["-c", f'model_reasoning_effort="{effort}"'])
+        # Prompt comes from stdin (avoids cmdline length/quoting issues).
+        args.append("-")
 
-        env = _build_env(workspace, profile_name)
-        await _ensure_hook_config(workspace)
+        env = os.environ.copy()
+        for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+            env.pop(key, None)
 
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -534,46 +325,27 @@ class ClaudeCLILoop:
             limit=10 * 1024 * 1024,
         )
         self._processes[open_id] = proc
-        self._stdin_writers[open_id] = proc.stdin  # type: ignore[assignment]
         logger.warning(
-            "Interactive Claude CLI started: open_id=%s workspace=%s model=%s pid=%s",
-            open_id, workspace, chosen, proc.pid,
+            "Codex exec started: open_id=%s workspace=%s model=%s effort=%s mode=%s thread=%s pid=%s",
+            open_id, workspace, model, effort, approval_mode, thread_id or "(new)", proc.pid,
         )
-
-        # Start background reader
-        task = asyncio.create_task(
-            self._read_loop(open_id, proc, approval_mode),
-        )
-        self._reader_tasks[open_id] = task
-
-    # ---- helpers for _read_loop ----
-
-    @staticmethod
-    def _current_msg_state(entries: list) -> dict | None:
-        """Return the msg_state of the oldest pending message, if any."""
-        if entries:
-            return entries[0][1]
-        return None
+        return proc, proc.stdin  # type: ignore[return-value]
 
     async def _patch_progress(self, msg_state: dict, status: str) -> None:
         """Rebuild the progress card from msg_state and PATCH it.
 
-        Idempotent and best-effort: any Feishu API error is swallowed since
-        a stale card is preferable to killing the task. Throttled to 0.5s
-        minimum interval between patches to avoid Feishu QPS limits.
+        Best-effort: any Feishu API error is swallowed since a stale card is
+        preferable to killing the task. Throttled to 0.5s except transitions.
         """
         card_id = msg_state.get("card_id")
         if not card_id:
             return
         now = asyncio.get_event_loop().time()
-        # Throttle: 0.5s between patches except for state transitions
-        # (status change always patches immediately).
         prev_status = msg_state.get("last_status")
         if status == prev_status and now - msg_state.get("last_patch_at", 0) < 0.5:
             return
         try:
             elapsed = now - msg_state.get("started_at", now)
-            # Carry the latest thinking snapshot to display
             last_text = msg_state.get("current_text") or msg_state.get("last_text", "")
             card = build_progress_card(
                 msg_state.get("model", ""),
@@ -593,17 +365,16 @@ class ClaudeCLILoop:
         except Exception as e:
             logger.debug("Progress card PATCH failed (non-fatal): %s", e)
 
-    # ---- reader loop ----
-
     async def _read_loop(
-        self, open_id: str, proc: asyncio.subprocess.Process, approval_mode: str,
+        self, open_id: str, proc: asyncio.subprocess.Process,
+        approval_mode: str, future: asyncio.Future, msg_state: dict,
     ) -> None:
-        """Background task: read JSONL from stdout, dispatch events, resolve futures."""
+        """Read JSONL events from stdout, patch progress, resolve the future."""
         stderr_lines: list[str] = []
-        model: str = "Claude Code"
         task_id = uuid.uuid4().hex[:12]
+        resolved = False
+        thread_id = ""
 
-        # ---- stderr drainer ----
         async def _drain_stderr() -> None:
             pipe = proc.stderr
             if pipe is None:
@@ -614,8 +385,17 @@ class ClaudeCLILoop:
                     break
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 stderr_lines.append(decoded)
-                logger.warning("claude stderr: %s", decoded)
+                # codex logs non-fatal ERRORs (e.g. models refresh timeout) —
+                # keep them for diagnostics only.
+                logger.debug("codex stderr: %s", decoded)
+
         stderr_task = asyncio.create_task(_drain_stderr())
+
+        def _resolve(result: AgentResult) -> None:
+            nonlocal resolved
+            if not future.done():
+                future.set_result(result)
+            resolved = True
 
         try:
             while True:
@@ -635,279 +415,231 @@ class ClaudeCLILoop:
                     continue
 
                 etype = event.get("type", "")
-                entries = self._response_futures.get(open_id, [])
-                msg_state = self._current_msg_state(entries)
 
-                # --- system/init ---
-                if etype == "system" and event.get("subtype") == "init":
-                    claude_sid = event.get("session_id", "")
-                    if claude_sid:
-                        session_registry[claude_sid] = {
+                if etype == "thread.started":
+                    thread_id = event.get("thread_id", "")
+                    if thread_id:
+                        session_registry[thread_id] = {
                             "open_id": open_id,
                             "approval_mode": approval_mode,
                         }
-                    model = event.get("model", model)
-                    if msg_state:
-                        msg_state["model"] = model
+                    await self._patch_progress(msg_state, "running")
+
+                elif etype == "turn.started":
+                    await self._patch_progress(msg_state, "running")
+
+                elif etype == "item.started":
+                    item = event.get("item", {})
+                    name = _ITEM_TOOL_NAMES.get(item.get("type", ""))
+                    if name:
+                        msg_state["current_tool"] = name
+                        msg_state["current_tool_args"] = _summarize_item_args(item) or "…"
                         await self._patch_progress(msg_state, "running")
 
-                # --- stream_event (text deltas accumulate silently; no PATCH) ---
-                elif etype == "stream_event":
-                    delta = event.get("event", {}).get("delta", {})
-                    if msg_state and delta.get("type") == "text_delta":
-                        msg_state["current_text"] += delta.get("text", "")
+                elif etype == "item.completed":
+                    await self._handle_item(event.get("item", {}), msg_state)
 
-                # --- assistant: tool_use boundary triggers PATCH ---
-                elif etype == "assistant":
-                    if not msg_state:
-                        continue
-                    for block in event.get("message", {}).get("content", []):
-                        btype = block.get("type")
-                        if btype == "text":
-                            # Some providers skip streaming and only emit a final
-                            # assistant text block. Accumulate only if empty.
-                            if not msg_state["current_text"]:
-                                msg_state["current_text"] = block.get("text", "")
-                        elif btype == "tool_use":
-                            tool_name = block.get("name", "unknown")
-                            # Boundary: archive the preceding thinking text, start fresh
-                            if msg_state["current_text"]:
-                                msg_state["last_text"] = msg_state["current_text"]
-                                msg_state["current_text"] = ""
-                            msg_state["step"] += 1
-                            msg_state["tool_counts"][tool_name] = msg_state["tool_counts"].get(tool_name, 0) + 1
-                            idx = msg_state["tool_counts"][tool_name]
-                            msg_state["current_tool"] = f"{tool_name} #{idx}"
-                            msg_state["current_tool_args"] = _summarize_tool_args(
-                                tool_name, block.get("input", {})
-                            )
-                            # Record tool call for audit/final card
-                            if not hasattr(msg_state, "_tools"):
-                                msg_state["tools"] = msg_state.get("tools", [])
-                            msg_state.setdefault("tools", []).append(
-                                ToolCallRecord(
-                                    tool_name=tool_name,
-                                    arguments=block.get("input", {}),
-                                ),
-                            )
-                            await self._patch_progress(msg_state, "running")
+                elif etype == "turn.completed":
+                    usage = event.get("usage", {})
+                    result = AgentResult(
+                        task_id=task_id,
+                        prompt="",
+                        model=msg_state.get("model", "codex"),
+                        status="completed",
+                        text=msg_state.get("current_text", "") or msg_state.get("last_text", ""),
+                        tools_used=msg_state.get("tools", []),
+                        error="",
+                        thread_id=thread_id,
+                        duration_s=asyncio.get_event_loop().time() - msg_state.get("started_at", 0),
+                        input_tokens=usage.get("input_tokens", 0),
+                        output_tokens=usage.get("output_tokens", 0),
+                        started_at=datetime.now(),
+                        finished_at=datetime.now(),
+                    )
+                    self._record_result(open_id, result, msg_state, "completed")
+                    _resolve(result)
 
-                # --- user (tool results): no PATCH, just internal state ---
-                elif etype == "user":
-                    pass
+                elif etype == "turn.failed":
+                    error = event.get("error", {})
+                    message = error.get("message", "") if isinstance(error, dict) else str(error)
+                    result = AgentResult(
+                        task_id=task_id,
+                        prompt="",
+                        model=msg_state.get("model", "codex"),
+                        status="failed",
+                        text=msg_state.get("last_text", ""),
+                        tools_used=msg_state.get("tools", []),
+                        error=message or "turn failed",
+                        thread_id=thread_id,
+                        duration_s=asyncio.get_event_loop().time() - msg_state.get("started_at", 0),
+                        started_at=datetime.now(),
+                        finished_at=datetime.now(),
+                    )
+                    self._record_result(open_id, result, msg_state, "failed")
+                    _resolve(result)
 
-                # --- attachment (hook errors, etc.): increment warnings, PATCH ---
-                elif etype == "attachment":
-                    if msg_state and event.get("attachment", {}).get("type") in (
-                        "hook_non_blocking_error", "hook_blocking_error",
-                    ):
-                        msg_state["warnings"] += 1
-                        msg_state["last_warning"] = _extract_warning_summary(
-                            event.get("attachment", {})
-                        )
-                        # Throttle: don't PATCH more than once per 2s for warning spam
-                        now = asyncio.get_event_loop().time()
-                        if now - msg_state.get("last_warning_patch", 0) >= 2.0:
-                            msg_state["last_warning_patch"] = now
-                            await self._patch_progress(msg_state, "running")
+                elif etype == "error":
+                    msg_state["warnings"] += 1
+                    msg_state["last_warning"] = str(event.get("message", ""))[:120]
+                    await self._patch_progress(msg_state, "running")
 
-                # --- result ---
-                elif etype == "result":
-                    self._dispatch_result(event, open_id, task_id, stderr_lines, entries)
-                    task_id = uuid.uuid4().hex[:12]
+                else:
+                    logger.debug("Unhandled codex event: %s", etype)
 
-                # --- system/api_retry ---
-                elif etype == "system" and event.get("subtype") == "api_retry":
-                    attempt = event.get("attempt", 0)
-                    max_retries = event.get("max_retries", "?")
-                    logger.warning("Claude API retry: attempt=%d", attempt)
-                    if msg_state:
-                        msg_state["last_warning"] = f"API 重试 {attempt}/{max_retries}"
-                        await self._patch_progress(msg_state, "retrying")
-
-            # ---- process exited (stdout EOF) ----
+            # ---- stdout EOF: process exited ----
             await proc.wait()
             exit_code = proc.returncode or 0
             self._last_error = ""
             if stderr_lines:
                 self._last_error = f"exit={exit_code}\n" + "\n".join(stderr_lines[-10:])
 
-            # Resolve any remaining pending futures as failed
-            entries = self._response_futures.pop(open_id, [])
-            for future, msg_state in entries:
-                if not future.done():
-                    reason = self._last_error or f"Claude CLI exited (code={exit_code})"
-                    future.set_result(self._error_result("", reason))
-                    # Update card with error if it exists
-                    if msg_state.get("card_id"):
-                        try:
-                            err_card = build_error_card("Claude CLI 已退出", reason[:3500])
-                            await feishu_client.update_card(msg_state["card_id"], err_card)
-                        except Exception:
-                            pass
+            # Crash = process died before the turn resolved (turn.completed /
+            # turn.failed never arrived). A clean exit after a resolved turn —
+            # even non-zero, even with noisy stderr — is NOT a crash: codex
+            # logs non-fatal ERRORs (e.g. models refresh timeout) routinely.
+            if not resolved:
+                reason = self._last_error or f"Codex CLI 提前退出 (code={exit_code})"
+                result = self._error_result("", reason)
+                result.task_id = task_id
+                result.thread_id = thread_id
+                self._record_result(open_id, result, msg_state, "failed")
+                _resolve(result)
+                if msg_state.get("card_id"):
+                    try:
+                        err_card = build_error_card("Codex CLI 已退出", reason[:3500])
+                        await feishu_client.update_card(msg_state["card_id"], err_card)
+                    except Exception:
+                        pass
 
-            # 如果当前进程依然是注册进程，说明是发生了非预期的意外崩溃
-            is_unexpected = (self._processes.get(open_id) == proc)
-            if is_unexpected and (exit_code != 0 or self._last_error):
-                reason = self._last_error or f"进程异常退出 (退出码={exit_code})"
                 crash_chat_id = self._chat_targets.get(open_id, "")
-                if crash_chat_id:
-                    asyncio.create_task(
-                        feishu_client.send_text(
-                            crash_chat_id,
-                            f"🚨 **Claude 运行进程异常退出** 🚨\n"
-                            f"退出状态码: `{exit_code}`\n"
-                            f"错误详情:\n```\n{reason[:1000]}\n```\n"
-                            f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。",
-                            is_chat=True,
-                        )
-                    )
-                else:
-                    asyncio.create_task(
-                        feishu_client.send_text(
-                            open_id,
-                            f"🚨 **Claude 运行进程异常退出** 🚨\n"
-                            f"退出状态码: `{exit_code}`\n"
-                            f"错误详情:\n```\n{reason[:1000]}\n```\n"
-                            f"💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。"
-                    )
+                hint = (
+                    "💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。"
                 )
+                text = (
+                    f"🚨 **Codex 运行进程异常退出** 🚨\n"
+                    f"退出状态码: `{exit_code}`\n"
+                    f"错误详情:\n```\n{reason[:1000]}\n```\n{hint}"
+                )
+                try:
+                    if crash_chat_id:
+                        asyncio.create_task(
+                            feishu_client.send_text(crash_chat_id, text, is_chat=True),
+                        )
+                    else:
+                        asyncio.create_task(feishu_client.send_text(open_id, text))
+                except Exception:
+                    pass
 
             logger.info(
-                "Claude interactive process exited: open_id=%s code=%s",
-                open_id, exit_code,
+                "Codex exec exited: open_id=%s code=%s thread=%s",
+                open_id, exit_code, thread_id or "(none)",
             )
 
         except asyncio.CancelledError:
             _kill_process_tree(proc)
+            _resolve(self._error_result("", "process terminated", "cancelled"))
             await proc.wait()
         except Exception as exc:
-            logger.exception("Claude read loop error: open_id=%s", open_id)
-            # Resolve remaining futures
-            entries = self._response_futures.pop(open_id, [])
-            for future, _ in entries:
-                if not future.done():
-                    future.set_result(self._error_result("", str(exc)))
+            logger.exception("Codex read loop error: open_id=%s", open_id)
+            _resolve(self._error_result("", str(exc)))
         finally:
             stderr_task.cancel()
             self._cleanup(open_id)
 
-    def _dispatch_result(
-        self, event: dict, open_id: str, task_id: str,
-        stderr_lines: list[str], entries: list,
-    ) -> None:
-        """Handle a single ``result`` event — resolve the oldest pending future."""
-        if not entries:
-            logger.debug(
-                "Result event with no waiter: open_id=%s task=%s", open_id, task_id,
-            )
+    async def _handle_item(self, item: dict, msg_state: dict) -> None:
+        itype = item.get("type", "")
+
+        if itype == "agent_message":
+            text = (item.get("text") or "").strip()
+            if text:
+                if msg_state.get("current_text"):
+                    msg_state["last_text"] = msg_state["current_text"]
+                msg_state["current_text"] = text
             return
 
-        future, msg_state = entries.pop(0)
+        if itype == "error":
+            msg_state["warnings"] += 1
+            msg_state["last_warning"] = (item.get("message") or "item error")[:120]
+            await self._patch_progress(msg_state, "running")
+            return
 
-        subtype = event.get("subtype", "")
-        cost = event.get("total_cost_usd", 0)
-        duration_ms = event.get("duration_ms", 0)
-        duration_s = duration_ms / 1000.0
-        num_turns = event.get("num_turns", 0)
-        error = event.get("error", "")
-        usage = event.get("usage", {})
+        tool_name = _ITEM_TOOL_NAMES.get(itype)
+        if not tool_name:
+            # todo_list / reasoning / unknown: count as a generic step.
+            if itype in ("todo_list", "reasoning", "mcp_tool_call"):
+                msg_state["step"] += 1
+            return
 
-        text = msg_state.get("current_text", "") or msg_state.get("last_text", "")
-        tools = msg_state.get("tools", [])
-        tool_counts = msg_state.get("tool_counts", {})
-        tool_count = sum(tool_counts.values())
-        card_id = msg_state.get("card_id", "")
+        msg_state["step"] += 1
+        counts = msg_state["tool_counts"]
+        counts[tool_name] = counts.get(tool_name, 0) + 1
+        msg_state["current_tool"] = f"{tool_name} #{counts[tool_name]}"
+        msg_state["current_tool_args"] = _summarize_item_args(item)
 
-        status = "failed" if subtype.startswith("error") else "completed"
-        result_text = event.get("result", "") or text
-
-        result = AgentResult(
-            task_id=task_id,
-            prompt="",
-            model=event.get("model", "unknown"),
-            status=status,
-            text=result_text,
-            tools_used=tools,
-            error=error if subtype == "error" else "",
-            session_id=event.get("session_id", "") or self.get_session_id_for_user(open_id) or "",
-            cost_usd=cost,
-            duration_s=duration_s,
-            num_turns=num_turns,
-            input_tokens=usage.get("input_tokens", 0),
-            output_tokens=usage.get("output_tokens", 0),
-            started_at=datetime.now(),
-            finished_at=datetime.now(),
+        arguments: dict = {}
+        if itype == "command_execution":
+            arguments = {"command": item.get("command", "")}
+        elif itype == "file_change":
+            arguments = {"changes": item.get("changes", [])}
+        msg_state.setdefault("tools", []).append(
+            ToolCallRecord(tool_name=tool_name, arguments=arguments),
         )
+        await self._patch_progress(msg_state, "running")
 
-        # Record result in history for /notes command lookup
+    def _record_result(
+        self, open_id: str, result: AgentResult, msg_state: dict, status: str,
+    ) -> None:
         self._last_results[open_id] = result
         user_history = self._task_history.setdefault(open_id, {})
-        user_history[task_id] = result
+        user_history[result.task_id] = result
         if len(user_history) > 50:
             first_key = next(iter(user_history))
             user_history.pop(first_key, None)
 
-        # Transition progress card → final state (same card_id, no new card).
+        card_id = msg_state.get("card_id")
         if card_id:
             try:
-                final_status = "cancelled" if status == "cancelled" else status
-                elapsed = asyncio.get_event_loop().time() - msg_state.get("started_at", asyncio.get_event_loop().time())
+                elapsed = asyncio.get_event_loop().time() - msg_state.get("started_at", 0)
                 final_card = build_progress_card(
-                    msg_state.get("model", event.get("model", "")),
-                    final_status,
+                    msg_state.get("model", result.model),
+                    status,
                     step=msg_state.get("step", 0),
-                    tool_counts=tool_counts,
+                    tool_counts=msg_state.get("tool_counts", {}),
                     elapsed_s=elapsed,
                     warnings=msg_state.get("warnings", 0),
-                    result_text=result_text,
-                    input_tokens=usage.get("input_tokens", 0),
-                    output_tokens=usage.get("output_tokens", 0),
-                    error=error,
-                    session_id=result.session_id,
-                    task_id=task_id,
+                    result_text=result.text,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    error=result.error,
+                    thread_id=result.thread_id,
+                    task_id=result.task_id,
                 )
-                asyncio.create_task(
-                    feishu_client.update_card(card_id, final_card),
-                )
+                asyncio.create_task(feishu_client.update_card(card_id, final_card))
             except Exception:
                 pass
 
-        if not future.done():
-            future.set_result(result)
-
         audit_logger.log_agent_result(
-            task_id=task_id,
-            model="claude-code",
+            task_id=result.task_id,
+            model="codex",
             status=status,
-            tools_count=tool_count,
-            text_len=len(result_text),
+            tools_count=len(result.tools_used),
+            text_len=len(result.text),
         )
-
         logger.info(
-            "Claude done: task=%s status=%s cost=$%.4f time=%.1fs tools=%d",
-            task_id, status, cost, duration_s, tool_count,
+            "Codex done: task=%s status=%s time=%.1fs tools=%d",
+            result.task_id, status, result.duration_s, len(result.tools_used),
         )
 
     def _cleanup(self, open_id: str) -> None:
-        """Clean up all state for a user after process exit or error."""
         self._processes.pop(open_id, None)
-        self._stdin_writers.pop(open_id, None)
         self._reader_tasks.pop(open_id, None)
-        # Clean up session_registry entries for this user
-        stale_sids = [
-            sid for sid, info in session_registry.items()
-            if info.get("open_id") == open_id
-        ]
-        for sid in stale_sids:
-            del session_registry[sid]
 
     @staticmethod
     def _error_result(prompt: str, error: str, status: str = "failed") -> AgentResult:
         return AgentResult(
             task_id=uuid.uuid4().hex[:12],
             prompt=prompt,
-            model="unknown",
+            model="codex",
             status=status,
             error=error,
             started_at=datetime.now(),
@@ -916,4 +648,4 @@ class ClaudeCLILoop:
 
 
 # Singleton
-claude_cli_loop = ClaudeCLILoop()
+codex_cli_loop = CodexCLILoop()

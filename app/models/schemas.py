@@ -150,12 +150,10 @@ class AgentResult(BaseModel):
     error: str = ""
     started_at: datetime | None = None
     finished_at: datetime | None = None
-    # Claude CLI specific fields
-    session_id: str = ""  # Claude Code session_id (from system/init)
-    cost_usd: float = 0.0
+    # Codex CLI specific fields
+    thread_id: str = ""  # codex thread id (from thread.started)
     duration_s: float = 0.0
-    num_turns: int = 0
-    input_tokens: int = 0   # context size proxy from usage.input_tokens
+    input_tokens: int = 0   # context size proxy from turn.completed usage
     output_tokens: int = 0
 
 
@@ -169,8 +167,8 @@ class Session(BaseModel):
     current_task_id: str | None = None
     result: ExecutionResult | None = None
     agent_messages: list[dict] = Field(default_factory=list)
-    claude_session_id: str = ""  # 当前动态运行活动句柄 (支持 --resume <id> 或 __continue__ 自动恢复项目最新历史)
+    codex_thread_id: str = ""  # 当前活动 codex 线程 (支持 resume <id> 或 __continue__ 自动恢复项目最新历史)
     context_tokens: int = 0      # last input_tokens (context usage proxy)
-    context_limit: int = 200000  # context window limit
+    context_limit: int = 400000  # context window limit
     pending_prompt: str = ""     # Prompt pending auto-retry after initial setup
     pending_reuse_confirm: bool = False  # After /cd: ask user to reuse last settings or re-pick

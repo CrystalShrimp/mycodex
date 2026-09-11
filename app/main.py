@@ -12,7 +12,6 @@ from config.settings import settings
 from app.feishu.client import feishu_client
 from app.feishu.ws import FeishuWsClient, create_ws_client
 from app.feishu import events
-from app.hooks.router import router as hooks_router
 from logging.handlers import RotatingFileHandler
 
 Path("logs").mkdir(exist_ok=True)
@@ -86,7 +85,7 @@ async def lifespan(app: FastAPI):
     logger.info("myclaw starting...")
     logger.info("Default workspace: %s", workspace)
     logger.info("Allowed users: %s", settings.get_allowed_users() or "(all)")
-    logger.info("Claude CLI: %s", settings.claude_cli_path)
+    logger.info("Codex CLI: %s", settings.codex_cli_path)
 
     # Start Feishu WebSocket long-connection
     ws_client = create_ws_client(
@@ -108,13 +107,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Failed to fetch bot open_id: %s", e)
 
-    # Profiles are selected per Feishu user and persisted outside Claude sessions.
-    from app.profiles import discover_profiles
-    profiles = discover_profiles()
-    if not profiles:
-        logger.error("No model profiles found in config/settings_*.json")
+    # Models are discovered from the local codex login (models_cache.json).
+    from app.profiles import discover_models
+    models = discover_models()
+    if not models:
+        logger.error("No codex models discovered (check ~/.codex/models_cache.json)")
     else:
-        logger.info("Available model profiles: %s", list(profiles.keys()))
+        logger.info("Available codex models: %s", list(models.keys()))
     yield
 
     await feishu_client.close()
@@ -123,13 +122,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="myclaw",
-    description="Feishu Bot backed by Claude Code CLI",
-    version="0.2.0",
+    description="Feishu Bot backed by Codex CLI",
+    version="0.3.0",
     lifespan=lifespan,
 )
-
-# Register hook callback routes
-app.include_router(hooks_router)
 
 
 @app.get("/health")
@@ -143,8 +139,8 @@ async def health():
             "last_msg_error": ws_client._last_msg_error,
             "dispatch_count": ws_client._dispatch_count,
         }
-    from app.agent.cli_loop import claude_cli_loop
-    info["cli_last_error"] = claude_cli_loop._last_error or "(none)"
+    from app.agent.cli_loop import codex_cli_loop
+    info["cli_last_error"] = codex_cli_loop._last_error or "(none)"
     return info
 
 

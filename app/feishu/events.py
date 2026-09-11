@@ -16,78 +16,26 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     CallBackToast,
 )
 
-from app.agent.cli_loop import claude_cli_loop, _kill_process_tree
+from app.agent.cli_loop import codex_cli_loop, _kill_process_tree
+from app.agent.codex_sessions import (
+    codex_auth_ready,
+    iter_thread_messages,
+    list_workspace_threads,
+    latest_thread_for_workspace,
+    find_all_codex_workspaces,
+)
 from app.approval.manager import approval_manager
 from app.feishu.client import feishu_client
 from app.audit.logger import audit_logger
 from app.models.schemas import Session, TaskStatus
-from app.profiles import discover_profiles, test_profile
+from app.profiles import discover_models, VALID_EFFORTS
 from app.state.preferences import preferences_manager
 from config.settings import settings
 
 logger = logging.getLogger("myclaw.events")
 
 
-# ===== Claude native session readers =====
-# claude persists the full conversation at
-# ~/.claude/projects/<encoded-workspace>/<session_id>.jsonl — we read it
-# back directly instead of duplicating the history in .sessions/ files.
-
-
-def _find_claude_session_file(session_id: str) -> Path | None:
-    """Locate the jsonl file for a claude session_id under ~/.claude/projects/.
-
-    The intermediate directory name encodes the workspace path, but its
-    exact transformation is claude-internal; we sidestep it by globbing
-    on the session_id, which is unique.
-    """
-    if not session_id:
-        return None
-    projects_dir = Path.home() / ".claude" / "projects"
-    if not projects_dir.exists():
-        return None
-    matches = list(projects_dir.glob(f"*/{session_id}.jsonl"))
-    return matches[0] if matches else None
-
-
-def _iter_claude_session_messages(session_id: str) -> list[dict]:
-    """Return user/assistant messages from a claude session jsonl.
-
-    Each entry: {"role": "user"|"assistant", "content": str}. Tool-only
-    or system rows are skipped. Returns [] if the session file is absent
-    or unreadable.
-    """
-    f = _find_claude_session_file(session_id)
-    if f is None:
-        return []
-    out: list[dict] = []
-    try:
-        for raw in f.read_text("utf-8", errors="replace").splitlines():
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                row = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            if row.get("type") not in ("user", "assistant"):
-                continue
-            msg = row.get("message", {})
-            content = msg.get("content", "")
-            # claude stores content as a list of blocks for assistant
-            # turns; flatten to text.
-            if isinstance(content, list):
-                text_parts = [
-                    b.get("text", "") for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                content = "\n".join(p for p in text_parts if p)
-            if not isinstance(content, str):
-                content = str(content)
-            out.append({"role": row["type"], "content": content})
-    except Exception as e:
-        logger.warning("Failed to read claude session %s: %s", session_id, e)
-    return out
+# ===== Helpers =====
 
 
 class ReplyChannel:
@@ -113,7 +61,7 @@ class ReplyChannel:
 
 
 class SessionManager:
-    """Session manager with file-based persistence for Claude session_id."""
+    """Session manager with file-based persistence for codex thread_id."""
 
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}  # session_id -> Session
@@ -229,10 +177,11 @@ def _parse_message_text(content: str) -> str:
 
 
 def _mode_label(mode: str) -> str:
-    return {"h": "高容忍(全允许)", "m": "中风险(高风险审批)", "l": "低容忍(全审批)"}.get(mode, mode)
-
-
-
+    return {
+        "h": "严格模式 (read-only 沙箱)",
+        "m": "平衡模式 (workspace-write 沙箱)",
+        "l": "全自动模式 (无沙箱)",
+    }.get(mode, mode)
 
 
 def _decode_output(raw: bytes) -> str:
@@ -244,92 +193,23 @@ def _decode_output(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def restore_project_path(encoded_name: str) -> str | None:
-    """根据 projects 里的编码文件夹名，还原真实的磁盘绝对路径。"""
-    import re
-    if len(encoded_name) < 4 or encoded_name[1:3] != "--":
-        return None
-    drive = encoded_name[0] + ":\\"
-    remaining = encoded_name[3:]
-    
-    def clean(s: str) -> str:
-        return re.sub(r'[^a-zA-Z0-9]', '', s).lower()
-        
-    matched = []
-    
-    def dfs(current_dir: Path, rem_str: str):
-        cleaned_rem = clean(rem_str)
-        if not cleaned_rem:
-            matched.append(str(current_dir))
-            return
-            
-        try:
-            # 过滤掉一些绝对不需要遍历的巨大子目录以保证效率
-            subdirs = [
-                x for x in current_dir.iterdir() 
-                if x.is_dir() and x.name not in (".venv", "node_modules", ".git")
-            ]
-        except Exception:
-            return
-            
-        for sub in subdirs:
-            cleaned_sub = clean(sub.name)
-            if not cleaned_sub:
-                continue
-            if cleaned_rem.startswith(cleaned_sub):
-                rest_str = consume_prefix(rem_str, sub.name)
-                if rest_str is not None:
-                    dfs(sub, rest_str)
-                    
-    def consume_prefix(rem_str: str, sub_name: str) -> str | None:
-        rem_idx = 0
-        sub_idx = 0
-        while sub_idx < len(sub_name) and rem_idx < len(rem_str):
-            c_rem = rem_str[rem_idx].lower()
-            c_sub = sub_name[sub_idx].lower()
-            
-            if c_rem.isalnum() and c_sub.isalnum():
-                if c_rem == c_sub:
-                    rem_idx += 1
-                    sub_idx += 1
-                else:
-                    return None
-            elif not c_rem.isalnum():
-                rem_idx += 1
-            elif not c_sub.isalnum():
-                sub_idx += 1
-                
-        while sub_idx < len(sub_name):
-            if sub_name[sub_idx].isalnum():
-                return None
-            sub_idx += 1
-            
-        while rem_idx < len(rem_str) and not rem_str[rem_idx].isalnum():
-            rem_idx += 1
-            
-        return rem_str[rem_idx:]
-        
-    dfs(Path(drive), remaining)
-    return matched[0] if matched else None
-
-
 def get_project_meta(path_str: str) -> dict:
-    """获取指定路径的项目关联信息 (Git 分支和 CLAUDE.md 状态)"""
+    """获取指定路径的项目关联信息 (Git 分支和 AGENTS.md 状态)"""
     p = Path(path_str)
     meta = {
         "git_branch": "未知 (非 Git 仓库)",
-        "claude_md": "不存在",
+        "agents_md": "不存在",
         "is_exists": p.exists()
     }
-    
+
     if not p.exists():
         return meta
-        
-    if (p / "CLAUDE.md").exists():
-        meta["claude_md"] = "🟢 存在"
+
+    if (p / "AGENTS.md").exists():
+        meta["agents_md"] = "🟢 存在"
     else:
-        meta["claude_md"] = "⚪ 不存在"
-        
+        meta["agents_md"] = "⚪ 不存在"
+
     git_dir = p / ".git"
     if git_dir.exists():
         try:
@@ -342,48 +222,8 @@ def get_project_meta(path_str: str) -> dict:
                     meta["git_branch"] = f"🌿 {head_content[:8]}"
         except Exception:
             pass
-            
+
     return meta
-
-
-def _claude_config_path() -> Path | None:
-    configured = settings.claude_data_dir.strip()
-    if not configured:
-        home_claude = (Path.home() / ".claude").resolve()
-        return home_claude if home_claude.exists() else None
-    path = Path(configured).expanduser().resolve()
-    if not path.exists() or not path.is_dir():
-        return None
-    return path
-
-
-def _detected_claude_config_path() -> Path:
-    return (Path.home() / ".claude").resolve()
-
-
-def append_to_claude_history(workspace: str, session_id: str, display_text: str) -> None:
-    """向 ~/.claude/history.jsonl 追加注册索引，确保 claude --resume 交互菜单能检索展示该 Session。"""
-    if not session_id or session_id == "__continue__":
-        return
-    try:
-        home_claude = Path.home() / ".claude"
-        home_claude.mkdir(parents=True, exist_ok=True)
-        history_file = home_claude / "history.jsonl"
-
-        ws_path = str(Path(workspace).resolve()).rstrip("\\/")
-        row = {
-            "display": display_text[:200] if display_text else "MyClaw Session",
-            "pastedContents": {},
-            "timestamp": int(time.time() * 1000),
-            "project": ws_path,
-            "sessionId": session_id,
-        }
-        line = json.dumps(row, ensure_ascii=False) + "\n"
-        with history_file.open("a", encoding="utf-8") as f:
-            f.write(line)
-        logger.info("Registered session %s to history.jsonl", session_id)
-    except Exception as e:
-        logger.warning("Failed to append to claude history.jsonl: %s", e)
 
 
 def _write_env_value(key: str, value: str) -> None:
@@ -402,191 +242,28 @@ def _write_env_value(key: str, value: str) -> None:
     env_path.write_text("\n".join(lines) + "\n", "utf-8")
 
 
-def find_all_claudecode_projects() -> list[str]:
-    """Read every existing workspace recorded under the configured .claude dir."""
-    claude_dir = _claude_config_path()
-    if claude_dir is None:
-        return []
-
-    projects: dict[str, float] = {}
-
-    def add_project(raw_path: object, active_at: object = 0) -> None:
-        if not isinstance(raw_path, str) or not raw_path:
-            return
-        path = Path(raw_path).expanduser()
-        if not path.is_absolute() or not path.is_dir():
-            return
-        resolved = str(path.resolve())
-        try:
-            timestamp = float(active_at or 0)
-        except (TypeError, ValueError):
-            timestamp = 0
-        projects[resolved] = max(projects.get(resolved, 0), timestamp)
-
-    history_file = claude_dir / "history.jsonl"
-    if history_file.is_file():
-        try:
-            for line in history_file.read_text("utf-8", errors="replace").splitlines():
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                add_project(row.get("project"), row.get("timestamp", 0))
-        except OSError as exc:
-            logger.warning("Failed to read Claude history %s: %s", history_file, exc)
-
-    projects_dir = claude_dir / "projects"
-    if projects_dir.is_dir():
-        for encoded_dir in projects_dir.iterdir():
-            if not encoded_dir.is_dir():
-                continue
-            found_cwd = False
-            for session_file in encoded_dir.glob("*.jsonl"):
-                try:
-                    active_at = session_file.stat().st_mtime
-                    with session_file.open("r", encoding="utf-8", errors="replace") as handle:
-                        for line_number, line in enumerate(handle):
-                            if line_number >= 100:
-                                break
-                            try:
-                                row = json.loads(line)
-                            except json.JSONDecodeError:
-                                continue
-                            cwd = row.get("cwd")
-                            if isinstance(cwd, str) and cwd:
-                                add_project(cwd, active_at)
-                                found_cwd = True
-                                break
-                except OSError:
-                    continue
-            if not found_cwd:
-                restored = restore_project_path(encoded_dir.name)
-                add_project(restored)
-
-    return sorted(projects, key=lambda path: (-projects[path], path.lower()))
+def find_all_codex_projects() -> list[str]:
+    """Every workspace that has at least one codex session, newest first."""
+    return find_all_codex_workspaces()
 
 
 def predict_continue_session(workspace: str) -> dict:
-    """静态预判当前工作区在 `claude --continue` 时将要恢复的 Session ID 及最后一次对话摘要。"""
+    """预判当前工作区将继续恢复的 codex thread 及最后一次对话摘要。"""
     if not workspace:
-        return {"can_continue": False, "session_id": "", "last_summary": ""}
-
-    ws_resolved = str(Path(workspace).resolve())
-    claude_dir = _claude_config_path() or (Path.home() / ".claude")
-    encoded_cwd = re.sub(r"[^A-Za-z0-9]", "-", ws_resolved)
-
-    project_dir = claude_dir / "projects" / encoded_cwd
-    if not project_dir.is_dir():
-        return {"can_continue": False, "session_id": "", "last_summary": ""}
-
-    candidates: list[tuple[float, str, str]] = []
-
-    for f in project_dir.glob("*.jsonl"):
-        try:
-            mtime = f.stat().st_mtime
-            sid = f.stem
-            last_text = ""
-            lines = f.read_text("utf-8", errors="replace").splitlines()
-            for line in reversed(lines):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                    if row.get("type") in ("user", "assistant"):
-                        msg = row.get("message", {})
-                        content = msg.get("content", "")
-                        if isinstance(content, list):
-                            parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
-                            content = " ".join(p for p in parts if p)
-                        if isinstance(content, str) and content.strip():
-                            last_text = content.strip()[:60]
-                            break
-                except Exception:
-                    continue
-            if last_text or len(lines) > 2:
-                candidates.append((mtime, sid, last_text))
-        except Exception:
-            continue
-
-    if not candidates:
-        return {"can_continue": False, "session_id": "", "last_summary": ""}
-
-    candidates.sort(key=lambda x: -x[0])
-    best_mtime, best_sid, best_summary = candidates[0]
+        return {"can_continue": False, "thread_id": "", "last_summary": ""}
+    found = latest_thread_for_workspace(workspace)
+    if not found:
+        return {"can_continue": False, "thread_id": "", "last_summary": ""}
     return {
         "can_continue": True,
-        "session_id": best_sid,
-        "last_summary": best_summary or "包含已存在的历史对话",
+        "thread_id": found[0],
+        "last_summary": found[1] or "包含已存在的历史对话",
     }
 
 
 def list_workspace_sessions(workspace: str) -> list[dict]:
-    """枚举当前工作区在 `~/.claude/projects/<encoded>/` 下的全部 Claude Session。
-
-    返回按 mtime 倒序排列：[{"session_id", "mtime", "last_summary", "message_count"}]。
-    message_count 只统计 user/assistant 文本行（与 /status 的口径一致）。
-    """
-    if not workspace:
-        return []
-    ws_resolved = str(Path(workspace).resolve())
-    claude_dir = _claude_config_path() or (Path.home() / ".claude")
-    encoded_cwd = re.sub(r"[^A-Za-z0-9]", "-", ws_resolved)
-    project_dir = claude_dir / "projects" / encoded_cwd
-    if not project_dir.is_dir():
-        return []
-
-    out: list[dict] = []
-    for f in project_dir.glob("*.jsonl"):
-        try:
-            mtime = f.stat().st_mtime
-            sid = f.stem
-            last_text = ""
-            msg_count = 0
-            lines = f.read_text("utf-8", errors="replace").splitlines()
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("type") not in ("user", "assistant"):
-                    continue
-                msg_count += 1
-                if not last_text:
-                    msg = row.get("message", {})
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        parts = [
-                            b.get("text", "")
-                            for b in content
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        ]
-                        content = " ".join(p for p in parts if p)
-                    if isinstance(content, str) and content.strip():
-                        last_text = content.strip()[:60]
-            # 与 predict_continue_session 同口径：跳过几乎空白的 stub 文件
-            if not (last_text or len(lines) > 2):
-                continue
-            out.append({
-                "session_id": sid,
-                "mtime": mtime,
-                "last_summary": last_text or "(无文本)",
-                "message_count": msg_count,
-            })
-        except Exception as e:
-            logger.warning("Failed to read session file %s: %s", f, e)
-            continue
-
-    out.sort(key=lambda x: -x["mtime"])
-    return out
-
-
-def _claude_dir_selection_card() -> dict:
-    from app.feishu.cards import build_claude_dir_selection_card
-    return build_claude_dir_selection_card(str(_detected_claude_config_path()))
+    """枚举当前工作区下的全部 codex thread，按最近活动倒序。"""
+    return list_workspace_threads(workspace)
 
 
 def _workspace_selection_card(session: Session | None = None) -> dict:
@@ -595,7 +272,7 @@ def _workspace_selection_card(session: Session | None = None) -> dict:
     else:
         current = settings.default_workspace.strip() or "尚未设置"
     from app.feishu.cards import build_cd_selection_card
-    return build_cd_selection_card(current, find_all_claudecode_projects())
+    return build_cd_selection_card(current, find_all_codex_projects())
 
 
 def _scan_workspace_files(workspace_str: str) -> list[dict]:
@@ -606,7 +283,7 @@ def _scan_workspace_files(workspace_str: str) -> list[dict]:
 
     ignore_dirs = {
         ".git", ".venv", "node_modules", "__pycache__",
-        ".sessions", ".claude", ".preferences", ".pytest_cache"
+        ".sessions", ".claude", ".codex", ".myclaw", ".preferences", ".pytest_cache"
     }
 
     result = []
@@ -616,7 +293,7 @@ def _scan_workspace_files(workspace_str: str) -> list[dict]:
                 continue
             if any(part in ignore_dirs for part in p.parts):
                 continue
-            
+
             try:
                 stat = p.stat()
                 size_bytes = stat.st_size
@@ -655,13 +332,6 @@ async def _send_text_after_callback(open_id: str, content: str) -> None:
     await asyncio.sleep(0.2)
     await feishu_client.send_text(open_id, content)
 
-async def _send_claude_setup_result(open_id: str, resolved: str) -> None:
-    await asyncio.sleep(0.2)
-    await feishu_client.send_text(
-        open_id, f"✅ Claude 数据目录已保存：{resolved}"
-    )
-    await feishu_client.send_card(open_id, _workspace_selection_card())
-
 
 def _info_toast(content: str) -> P2CardActionTriggerResponse:
     """Build responses exactly as shown in the official Feishu Python sample."""
@@ -683,17 +353,17 @@ def _log_dispatch_failure(task: asyncio.Task) -> None:
 
 
 async def _check_and_run_pending(open_id: str) -> bool:
-    """Check if all initial setup items (Provider, Level, Mode) are complete.
-    If complete and pending_prompt exists, trigger _run_claude automatically.
+    """Check if all initial setup items (Model, Effort, Mode) are complete.
+    If complete and pending_prompt exists, trigger _run_codex automatically.
     """
     preferences = preferences_manager.get(open_id)
-    profiles = discover_profiles()
+    models = discover_models()
 
-    has_provider = preferences.model in profiles
-    has_level = preferences.level in ("haiku", "sonnet", "opus")
+    has_model = preferences.model in models
+    has_level = preferences.level in VALID_EFFORTS
     has_mode = preferences.mode in ("h", "m", "l")
 
-    if has_provider and has_level and has_mode:
+    if has_model and has_level and has_mode:
         session = session_manager.get_user_session(open_id)
         if session:
             preferences_manager.save_workspace_config(session.workspace, preferences)
@@ -703,7 +373,7 @@ async def _check_and_run_pending(open_id: str) -> bool:
             session.pending_prompt = ""
             session_manager.save_session(session)
 
-            profile_label = profiles.get(preferences.model, {}).get("label", preferences.model)
+            model_label = models.get(preferences.model, {}).get("label", preferences.model)
             mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
             mode_lbl = mode_labels.get(preferences.mode, preferences.mode)
 
@@ -712,8 +382,8 @@ async def _check_and_run_pending(open_id: str) -> bool:
                 "🎉 初始配置已全部就绪！",
                 "",
                 "📋 当前运行设置：",
-                f"• 供应商 (Provider)：`{profile_label}`",
-                f"• 规格 (Model Level)：`{preferences.level}`",
+                f"• 模型 (Model)：`{model_label}`",
+                f"• 推理强度 (Effort)：`{preferences.level}`",
                 f"• 审批模式 (Mode)：`{mode_lbl}`",
                 "",
                 f"正在全自动为您执行暂存的任务：`{prompt_preview}` ..."
@@ -721,7 +391,7 @@ async def _check_and_run_pending(open_id: str) -> bool:
             reply = ReplyChannel(open_id, session.chat_id, bool(session.chat_id))
             await reply.text("\n".join(msg_lines))
             asyncio.get_running_loop().create_task(
-                _run_claude(pending, open_id, session, chat_id=session.chat_id)
+                _run_codex(pending, open_id, session, chat_id=session.chat_id)
             )
             return True
     return False
@@ -800,7 +470,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
     operator = event.event.operator
     if not action or not action.value or not operator:
         return P2CardActionTriggerResponse()
-        
+
     card_type = action.value.get("type", "")
     act = action.value.get("act", "")
     open_id = operator.open_id or ""
@@ -812,43 +482,13 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         action.option,
         sorted((action.form_value or {}).keys()),
     )
-    
-    # First-run setup: locate the Claude data directory before listing workspaces.
-    if card_type == "claude_dir_select":
-        resp = P2CardActionTriggerResponse()
-        toast = CallBackToast()
-        act = action.value.get("act", "")
-        if act == "set_detected":
-            target_path = action.value.get("path", "")
-        else:
-            target_path = ""
-            if action.form_value:
-                target_path = action.form_value.get("claude_data_dir") or ""
-        path = Path(target_path.strip()).expanduser()
-        if not path.is_absolute() or not path.is_dir():
-            toast.type = "error"
-            toast.content = "请输入存在的 .claude 文件夹绝对路径"
-            resp.toast = toast
-            return resp
-        if not (path / "history.jsonl").is_file() and not (path / "projects").is_dir():
-            toast.type = "error"
-            toast.content = "该目录中未找到 history.jsonl 或 projects 文件夹"
-            resp.toast = toast
-            return resp
-        resolved = str(path.resolve())
-        _write_env_value("CLAUDE_DATA_DIR", resolved)
-        settings.claude_data_dir = resolved
-        task = asyncio.get_running_loop().create_task(
-            _send_claude_setup_result(open_id, resolved)
-        )
-        task.add_done_callback(_log_dispatch_failure)
-        return P2CardActionTriggerResponse({})
+
     # 拦截并处理工作区选择、确认与返回
     if card_type == "workspace_select":
         act = action.value.get("act", "")
         resp = P2CardActionTriggerResponse()
         toast = CallBackToast()
-        
+
         # 1. 第一阶段预处理：拉起确认卡片
         if act in ("pre_switch", "pre_create"):
             target_path = ""
@@ -859,21 +499,21 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                     target_path = action.form_value.get("workspace_path") or ""
                 if not target_path:
                     target_path = action.option or ""
-                    
+
             target_path = target_path.strip()
             if not target_path:
                 toast.type = "error"
                 toast.content = "未检测到路径。您可以直接发送指令：/cd <绝对路径>"
                 resp.toast = toast
                 return resp
-                
+
             p = Path(target_path)
             if not p.is_absolute():
                 toast.type = "error"
                 toast.content = "错误：请输入绝对路径"
                 resp.toast = toast
                 return resp
-                
+
             is_new = False
             if not p.exists():
                 if act == "pre_create":
@@ -890,18 +530,18 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                     toast.content = f"错误：路径不存在: `{target_path}`"
                     resp.toast = toast
                     return resp
-                    
+
             # 探测元数据
             meta = get_project_meta(target_path)
             # 检查是否有任务正在运行
-            warning_running = claude_cli_loop.is_running(open_id)
-            
+            warning_running = codex_cli_loop.is_running(open_id)
+
             from app.feishu.cards import build_cd_confirm_card
             confirm_card = build_cd_confirm_card(
                 target_path=str(p.resolve()),
                 is_new=is_new,
                 git_branch=meta["git_branch"],
-                claude_md=meta["claude_md"],
+                agents_md=meta["agents_md"],
                 warning_running=warning_running
             )
             task = asyncio.get_running_loop().create_task(
@@ -909,7 +549,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             )
             task.add_done_callback(_log_dispatch_failure)
             return P2CardActionTriggerResponse({})
-            
+
         # 2. 第二阶段真正动作：确认切换
         elif act == "confirm_switch":
             target_path = action.value.get("path", "").strip()
@@ -918,7 +558,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                 toast.content = "路径信息丢失，请重新选择"
                 resp.toast = toast
                 return resp
-                
+
             p = Path(target_path)
             is_new = False
             if not p.exists():
@@ -936,27 +576,27 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                     toast.content = f"无法创建目录: {e}"
                     resp.toast = toast
                     return resp
-                    
+
             session = session_manager.get_user_session(open_id)
             if not session:
                 session = session_manager.create_session(open_id, "", workspace=str(p.resolve()))
             else:
                 session.workspace = str(p.resolve())
                 session.workspace_selected = True
-                session.claude_session_id = "__continue__"  # 切换工作区后全自动带 --continue 恢复该项目最新 Session 历史
+                session.codex_thread_id = "__continue__"  # 切换工作区后自动恢复该项目最新 Thread
                 session_manager.save_session(session)
 
             preferences_manager.clear(open_id)
             resolved_workspace = str(p.resolve())
             _write_env_value("DEFAULT_WORKSPACE", resolved_workspace)
             settings.default_workspace = resolved_workspace
-            claude_cli_loop.cancel_by_user(open_id)
-            
+            codex_cli_loop.cancel_by_user(open_id)
+
             pred = predict_continue_session(session.workspace)
             if pred["can_continue"]:
-                pred_text = f"\n🔄 **预计关联会话：** 可继续恢复 (`{pred['session_id']}`)\n💬 **上次对话：** {pred['last_summary']}"
+                pred_text = f"\n🔄 **预计关联会话：** 可继续恢复 (`{pred['thread_id']}`)\n💬 **上次对话：** {pred['last_summary']}"
             else:
-                pred_text = "\n🆕 **预计关联会话：** 纯净项目 (发送首条消息时自动分配新 Session)"
+                pred_text = "\n🆕 **预计关联会话：** 纯净项目 (发送首条消息时自动创建新 Thread)"
 
             action_msg = "已在新目录新建并切换" if is_new else "已切换"
             task = asyncio.get_running_loop().create_task(
@@ -966,14 +606,14 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
 
             ws_config = preferences_manager.load_workspace_config(resolved_workspace)
             if ws_config and ws_config.complete:
-                profiles = discover_profiles()
-                profile_label = profiles.get(ws_config.model, {}).get("label", ws_config.model)
+                models = discover_models()
+                model_label = models.get(ws_config.model, {}).get("label", ws_config.model)
                 from app.feishu.cards import build_workspace_config_reuse_card
                 reuse_card = build_workspace_config_reuse_card(
                     approval_id=uuid.uuid4().hex[:12],
                     workspace=resolved_workspace,
-                    profile_label=profile_label,
-                    level=ws_config.level,
+                    model_label=model_label,
+                    effort=ws_config.level,
                     mode=ws_config.mode,
                     action_type="switch",
                 )
@@ -982,7 +622,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                 )
                 task2.add_done_callback(_log_dispatch_failure)
             return P2CardActionTriggerResponse({})
-            
+
         # 3. 第二阶段动作：取消并返回第一阶段卡片
         elif act == "cancel_switch":
             task = asyncio.get_running_loop().create_task(
@@ -1051,58 +691,48 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         resp.toast = toast
         return resp
 
-    # Model selection card: switch_model → approve + update session model
+    # Model selection card: switch_model → update preferences.model
     if card_type == "model_selection" and act == "switch_model":
         target_model = action.value.get("model", "")
-        if target_model not in ("haiku", "sonnet", "opus"):
-            target_model = "sonnet"
-        preferences = preferences_manager.get(open_id)
-        preferences.level = target_model
-        preferences_manager.save(open_id, preferences)
-        approval_manager.set_switch_model(approval_id, target_model)
-        asyncio.get_running_loop().create_task(
-            approval_manager.handle_decision(approval_id, open_id, True)
-        )
-        asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
-
+        models = discover_models()
         resp = P2CardActionTriggerResponse()
         toast = CallBackToast()
-        toast.type = "info"
-        toast.content = f"已切换模型规格: {target_model}"
-        resp.toast = toast
-        return resp
-
-    # Provider model selection card.
-    if card_type == "profile_switch" and act == "switch_profile":
-        profile_name = action.value.get("profile", "")
-        profiles = discover_profiles()
-        label = profiles.get(profile_name, {}).get("label", profile_name)
-        resp = P2CardActionTriggerResponse()
-        toast = CallBackToast()
-        if profile_name not in profiles:
+        if target_model not in models:
             toast.type = "error"
-            toast.content = f"切换失败: 未找到 {label} 配置"
+            toast.content = f"切换失败: 未知模型 {target_model}"
             resp.toast = toast
             return resp
 
         preferences = preferences_manager.get(open_id)
-        preferences.model = profile_name
+        preferences.model = target_model
         preferences_manager.save(open_id, preferences)
-        claude_cli_loop.cancel_by_user(open_id)
-        ok, detail = test_profile(profile_name)
+        # 每条消息独立 spawn，模型切换对下一条消息立即生效；杀掉进行中的旧模型任务
+        codex_cli_loop.cancel_by_user(open_id)
+        asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
 
-        if ok:
-            asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
-
-        toast.type = "success" if ok else "error"
-        toast.content = (
-            f"模型已切换为 {label}"
-            if ok else f"模型不可用: {label} ({detail})"
-        )
+        toast.type = "success"
+        toast.content = f"已切换模型: {models[target_model].get('label', target_model)}"
         resp.toast = toast
         return resp
 
-    # Session selection card (/session)
+    # Effort (reasoning effort) selection card
+    if card_type == "effort_selection" and act == "switch_effort":
+        target_effort = action.value.get("effort", "")
+        resp = P2CardActionTriggerResponse()
+        toast = CallBackToast()
+        if target_effort not in VALID_EFFORTS:
+            target_effort = "medium"
+        preferences = preferences_manager.get(open_id)
+        preferences.level = target_effort
+        preferences_manager.save(open_id, preferences)
+        asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
+
+        toast.type = "info"
+        toast.content = f"已设置推理强度: {target_effort}"
+        resp.toast = toast
+        return resp
+
+    # Thread selection card (/session)
     if card_type == "session_select" and act == "resume_session":
         target_sid = (action.option or "").strip()
         if not target_sid and action.value:
@@ -1111,22 +741,22 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         toast = CallBackToast()
         if not target_sid:
             toast.type = "error"
-            toast.content = "未选择 Session"
+            toast.content = "未选择 Thread"
             resp.toast = toast
             return resp
 
         session = session_manager.get_user_session(open_id)
         if not session:
             session = session_manager.create_session(open_id, "")
-        session.claude_session_id = target_sid
+        session.codex_thread_id = target_sid
         session.context_tokens = 0
         session_manager.save_session(session)
-        # 让下次发消息时用 --resume <id> 启动新进程；旧进程的 cancel 用任务异步等待
-        claude_cli_loop.cancel_by_user(open_id)
-        asyncio.get_running_loop().create_task(claude_cli_loop.cancel_and_wait(open_id))
+        # 让下次发消息时用 resume <id> 启动；旧进程的 cancel 用任务异步等待
+        codex_cli_loop.cancel_by_user(open_id)
+        asyncio.get_running_loop().create_task(codex_cli_loop.cancel_and_wait(open_id))
 
         toast.type = "success"
-        toast.content = f"已切换到 Session {target_sid}（下一条消息将 --resume）"
+        toast.content = f"已切换到 Thread {target_sid}（下一条消息将 resume）"
         resp.toast = toast
         return resp
 
@@ -1139,15 +769,14 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             session_manager.save_session(session)
         reuse = (act == "reuse_yes")
         if not reuse:
-            # User opted to re-pick: wipe preferences so next _run_claude shows setup cards.
+            # User opted to re-pick: wipe preferences so next _run_codex shows setup cards.
             preferences_manager.clear(open_id)
-        toast = P2CardActionTriggerResponse()
         toast_msg = "沿用上次设置" if reuse else "已清空，重新选择"
         # Re-trigger the queued prompt with the (preserved or cleared) prefs.
         if pending and session:
             session.pending_prompt = ""
             session_manager.save_session(session)
-            asyncio.get_running_loop().create_task(_run_claude(pending, open_id, session))
+            asyncio.get_running_loop().create_task(_run_codex(pending, open_id, session))
         # Simple toast for the click.
         resp = P2CardActionTriggerResponse()
         toast_cb = CallBackToast()
@@ -1180,7 +809,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         toast.content = "已重置偏好，请重新选择配置"
         resp.toast = toast
         if session:
-            asyncio.get_running_loop().create_task(_run_claude(session.pending_prompt or "", open_id, session))
+            asyncio.get_running_loop().create_task(_run_codex(session.pending_prompt or "", open_id, session))
         return resp
 
 
@@ -1243,13 +872,16 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     text_lower = text.lower()
 
     session = session_manager.get_user_session(open_id)
-    if _claude_config_path() is None:
-        await reply.card( _claude_dir_selection_card())  # 配置流程：保持私聊
+    if not codex_auth_ready():
+        await reply.text(
+            "⚠️ 本机尚未检测到 Codex 登录态（`~/.codex/auth.json` 不存在）。\n"
+            "请先在终端运行 `codex login` 完成 ChatGPT 账号登录，再回来发消息。",
+        )
         return
 
     # --- /stop: interrupt current task ---
     if text_lower in ("/stop", "停止"):
-        cancelled = await claude_cli_loop.cancel_and_wait(open_id)
+        cancelled = await codex_cli_loop.cancel_and_wait(open_id)
         if cancelled:
             await reply.text( "已中断会话。")
         else:
@@ -1264,7 +896,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         preferences.mode = ""
         preferences_manager.save(open_id, preferences)
         await reply.text(
-            "已清空所有初始设置（Provider / Model Level / Mode）。",
+            "已清空所有初始设置（Model / Effort / Mode）。",
         )
         return
 
@@ -1274,6 +906,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             session = session_manager.get_user_session(open_id)
             preferences = preferences_manager.get(open_id)
             if session:
+                models = discover_models()
                 # Build context usage info
                 ctx_info = ""
                 if session.context_tokens > 0:
@@ -1282,29 +915,23 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
                         f"上下文用量: `{session.context_tokens:,}` / `{session.context_limit:,}` ({pct:.0f}%)\n"
                     )
                     if pct >= settings.context_critical_percent:
-                        if settings.compact_enabled:
-                            ctx_info += "⚠️ 上下文即将耗尽，建议使用 `/compact` 压缩或 `/new` 开始新会话\n"
-                        else:
-                            ctx_info += "⚠️ 上下文即将耗尽，建议使用 `/new` 开始新会话\n"
+                        ctx_info += "⚠️ 上下文即将耗尽，建议使用 `/new` 开始新会话\n"
                     elif pct >= settings.context_warn_percent:
-                        if settings.compact_enabled:
-                            ctx_info += "⚠️ 上下文用量较高，可以用 `/compact` 压缩上下文\n"
-                        else:
-                            ctx_info += "⚠️ 上下文用量较高，请注意\n"
-                
-                csid = session.claude_session_id or "未启动"
+                        ctx_info += "⚠️ 上下文用量较高，请注意\n"
+
+                ctid = session.codex_thread_id or "未启动"
                 msg_count = 0
-                if session.claude_session_id and session.claude_session_id != "__continue__":
-                    msg_count = len(_iter_claude_session_messages(session.claude_session_id))
-                elif session.claude_session_id == "__continue__":
-                    csid = "全自动恢复该项目最新 Session (--continue)"
+                if session.codex_thread_id and session.codex_thread_id != "__continue__":
+                    msg_count = len(iter_thread_messages(session.codex_thread_id))
+                elif session.codex_thread_id == "__continue__":
+                    ctid = "全自动恢复该项目最新 Thread"
 
                 await reply.text(
                     f"📁 工作区: `{session.workspace}`\n"
-                    f"🔑 Claude Session: `{csid}`\n"
-                    f"🤖 模型供应商: `{preferences.model or '未选择'}`\n"
-                    f"⚡ 模型规格: `{preferences.level or '未选择'}`\n"
-                    f"🛡️ 审批模式: `{preferences.mode or '未选择'}`\n"
+                    f"🔑 Codex Thread: `{ctid}`\n"
+                    f"🤖 模型: `{models.get(preferences.model, {}).get('label', preferences.model or '未选择')}`\n"
+                    f"⚡ 推理强度: `{preferences.level or '未选择'}`\n"
+                    f"🛡️ 审批模式: `{_mode_label(preferences.mode) if preferences.mode else '未选择'}`\n"
                     f"💬 底层推演步数: {msg_count} 步 (含思考/工具调用记录)\n"
                     f"{ctx_info}"
                     f"状态: {session.status.value}",
@@ -1322,78 +949,62 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         await reply.card( build_help_card())
         return
 
-    # --- /provider [profile]: choose provider profile ---
-    if text_lower == "/provider" or text_lower.startswith("/provider "):
+    # --- /model [slug]: choose codex model ---
+    if text_lower == "/model" or text_lower.startswith("/model "):
         parts = text.split(None, 1)
-        profiles = discover_profiles()
+        models = discover_models()
         preferences = preferences_manager.get(open_id)
-        if not profiles:
-            await reply.text( "未发现 config/settings_*.json 模型配置。")
-            return
+
         if len(parts) == 2:
-            name = parts[1].strip().lower()
-            if name in ("reset", "clear"):
-                preferences.model = ""
-                preferences.level = ""
-                preferences.mode = ""
+            arg = parts[1].strip()
+            if arg in models:
+                preferences.model = arg
                 preferences_manager.save(open_id, preferences)
+                codex_cli_loop.cancel_by_user(open_id)
                 await reply.text(
-                    "已清空所有初始设置（Provider / Model Level / Mode）。",
+                    f"模型已切换为 `{models[arg].get('label', arg)}`，下一条消息生效。",
                 )
                 return
-            if name not in profiles:
-                await reply.text( f"未知供应商: `{name}`\n可用: {'、'.join(profiles.keys())}",
-                )
-                return
-            preferences.model = name
-            preferences_manager.save(open_id, preferences)
-            await claude_cli_loop.cancel_and_wait(open_id)
-            ok, detail = test_profile(name)
-            label = profiles[name].get("label", name)
             await reply.text(
-                f"模型供应商已切换为 `{label}`。" if ok else f"模型供应商 `{label}` 不可用: {detail}",
+                f"未知模型: `{arg}`\n可用: {'、'.join(models.keys())}",
             )
             return
 
-        from app.feishu.cards import build_profile_selection_card
-        card = build_profile_selection_card(
+        from app.feishu.cards import build_model_selection_card
+        card = build_model_selection_card(
             approval_id=uuid.uuid4().hex[:12],
-            profiles=profiles,
-            active_profile=preferences.model,
+            models=models,
+            current_model=preferences.model,
         )
         await reply.card( card)
         return
 
-    # --- /model [haiku|sonnet|opus] / /level: choose model capability level ---
+    # --- /level [low|medium|high|xhigh|max]: choose reasoning effort ---
     if (
-        text_lower == "/model" or text_lower.startswith("/model ")
-        or text_lower == "/level" or text_lower.startswith("/level ")
+        text_lower == "/level" or text_lower.startswith("/level ")
+        or text_lower == "/effort" or text_lower.startswith("/effort ")
     ):
         parts = text.split(None, 1)
         preferences = preferences_manager.get(open_id)
-        profiles = discover_profiles()
-        valid_levels = ("haiku", "sonnet", "opus")
 
         if len(parts) == 2:
             arg = parts[1].strip().lower()
-            if arg in valid_levels:
+            if arg in VALID_EFFORTS:
                 preferences.level = arg
                 preferences_manager.save(open_id, preferences)
-                await claude_cli_loop.cancel_and_wait(open_id)
-                await reply.text( f"模型规格已切换为 `{preferences.level}`。")
+                await reply.text( f"推理强度已切换为 `{arg}`。")
                 return
-            elif arg in profiles:
-                await reply.text(
-                    f"⚠️ `{arg}` 是模型供应商 (Provider)。\n"
-                    f"切换供应商请使用：`/provider {arg}`\n"
-                    f"切换模型规格请使用：`/model haiku|sonnet|opus`",
-                )
-                return
+            await reply.text(
+                f"未知推理强度: `{arg}`\n可用: {'、'.join(VALID_EFFORTS)}",
+            )
+            return
 
-        await reply.text(
-            f"当前模型规格: `{preferences.level or '未选择'}`\n\n"
-            "用法: `/model haiku|sonnet|opus` (也可使用 `/level`)",
+        from app.feishu.cards import build_effort_selection_card
+        card = build_effort_selection_card(
+            approval_id=uuid.uuid4().hex[:12],
+            current_effort=preferences.level,
         )
+        await reply.card( card)
         return
 
     # --- /mode [h|m|l]: choose approval mode ---
@@ -1405,14 +1016,12 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             new_mode = parts[1].strip().lower()
             preferences.mode = new_mode
             preferences_manager.save(open_id, preferences)
-            mode_labels = {"h": "🛡️ 严格模式", "m": "⚖️ 平衡模式", "l": "⚡ 全自动模式"}
-            mode_name = mode_labels.get(new_mode, new_mode)
-            # session_registry 里的 approval_mode 是进程启动时的快照，
-            # 复用旧进程会让 hook 仍按旧 mode 走审批分支，必须 teardown。
+            mode_name = _mode_label(new_mode)
+            # 每条消息独立 spawn，新模式对下一条消息自动生效；杀掉按旧模式跑的任务
             if old_mode != new_mode:
-                await claude_cli_loop.cancel_and_wait(open_id)
+                await codex_cli_loop.cancel_and_wait(open_id)
                 await reply.text(
-                    f"审批模式已切换为 {mode_name} (`{new_mode}`)，已重启 Claude 进程使新模式生效。",
+                    f"审批模式已切换为 {mode_name} (`{new_mode}`)，下一条消息生效。",
                 )
             else:
                 await reply.text(
@@ -1449,14 +1058,14 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     # --- /cd <path>: switch workspace ---
     if text_lower.startswith("/cd"):
         parts = text.split(None, 1)
-        
+
         # 1. 如果不带参数，展示卡片选择已有项目或新建
         if len(parts) < 2 or not parts[1].strip():
             session = session_manager.get_user_session(open_id)
             card = _workspace_selection_card(session)
             await reply.card( card)
             return
-            
+
         # 2. 如果带路径参数，直接校验切换
         new_path = parts[1].strip()
         p = Path(new_path)
@@ -1464,7 +1073,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             await reply.text( "错误：请使用绝对路径，例如 `/cd D:\\projects\\myapp`",
             )
             return
-            
+
         if not p.exists():
             # 检查父目录是否存在
             parent = p.parent
@@ -1472,55 +1081,55 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
                 await reply.text( f"❌ 切换失败：父目录 `{parent}` 在磁盘上不存在！"
                 )
                 return
-            
+
             # 目录不存在但父目录存在 — 弹出前置确认卡片，待用户确认后再建目录切换
             target_path = str(p.resolve())
             meta = get_project_meta(target_path)
-            warning_running = claude_cli_loop.is_running(open_id)
-            
+            warning_running = codex_cli_loop.is_running(open_id)
+
             from app.feishu.cards import build_cd_confirm_card
             confirm_card = build_cd_confirm_card(
                 target_path=target_path,
                 is_new=True,
                 git_branch=meta["git_branch"],
-                claude_md=meta["claude_md"],
+                agents_md=meta["agents_md"],
                 warning_running=warning_running
             )
             await reply.card( confirm_card)
             return
-                
+
         session = session_manager.get_user_session(open_id)
         if not session:
             session = session_manager.create_session(open_id, chat_id, workspace=str(p.resolve()))
         else:
             session.workspace = str(p.resolve())
             session.workspace_selected = True
-            session.claude_session_id = "__continue__"  # 切换工作区后全自动带 --continue 恢复该项目最新 Session 历史
+            session.codex_thread_id = "__continue__"  # 切换工作区后自动恢复该项目最新 Thread
             session_manager.save_session(session)
 
         resolved_workspace = str(p.resolve())
         _write_env_value("DEFAULT_WORKSPACE", resolved_workspace)
         settings.default_workspace = resolved_workspace
-        claude_cli_loop.cancel_by_user(open_id)
+        codex_cli_loop.cancel_by_user(open_id)
 
         pred = predict_continue_session(session.workspace)
         if pred["can_continue"]:
-            pred_text = f"\n🔄 **预计关联会话：** 可继续恢复 (`{pred['session_id']}`)\n💬 **上次对话：** {pred['last_summary']}"
+            pred_text = f"\n🔄 **预计关联会话：** 可继续恢复 (`{pred['thread_id']}`)\n💬 **上次对话：** {pred['last_summary']}"
         else:
-            pred_text = "\n🆕 **预计关联会话：** 纯净项目 (发送首条消息时自动分配新 Session)"
+            pred_text = "\n🆕 **预计关联会话：** 纯净项目 (发送首条消息时自动创建新 Thread)"
 
         await reply.text( f"📁 工作区已切换：`{session.workspace}`{pred_text}")
 
         ws_config = preferences_manager.load_workspace_config(resolved_workspace)
         if ws_config and ws_config.complete:
-            profiles = discover_profiles()
-            profile_label = profiles.get(ws_config.model, {}).get("label", ws_config.model)
+            models = discover_models()
+            model_label = models.get(ws_config.model, {}).get("label", ws_config.model)
             from app.feishu.cards import build_workspace_config_reuse_card
             reuse_card = build_workspace_config_reuse_card(
                 approval_id=uuid.uuid4().hex[:12],
                 workspace=resolved_workspace,
-                profile_label=profile_label,
-                level=ws_config.level,
+                model_label=model_label,
+                effort=ws_config.level,
                 mode=ws_config.mode,
                 action_type="switch",
             )
@@ -1529,7 +1138,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             preferences_manager.clear(open_id)
         return
 
-    # --- /session [session_id]: list sessions in current workspace and resume one ---
+    # --- /session [thread_id]: list threads in current workspace and resume one ---
     if text_lower == "/session" or text_lower.startswith("/session "):
         parts = text.split(None, 1)
         session = session_manager.get_user_session(open_id)
@@ -1540,40 +1149,40 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         # /session <id>: 直接走 /resume 同款路径
         if len(parts) == 2 and parts[1].strip():
             target_id = parts[1].strip()
-            await claude_cli_loop.cancel_and_wait(open_id)
-            session.claude_session_id = target_id
+            await codex_cli_loop.cancel_and_wait(open_id)
+            session.codex_thread_id = target_id
             session.context_tokens = 0
             session_manager.save_session(session)
             await reply.text(
-                f"🔑 已切换到 Claude Session `{target_id}`。\n"
-                "下一条消息将通过 `--resume` 在该会话内继续。",
+                f"🔑 已切换到 Codex Thread `{target_id}`。\n"
+                "下一条消息将通过 `resume` 在该会话内继续。",
             )
             return
 
         # /session (无参): 弹卡片选择
         sessions = list_workspace_sessions(ws)
-        cur = session.claude_session_id or ""
+        cur = session.codex_thread_id or ""
         if cur == "__continue__":
             cur = ""
         from app.feishu.cards import build_session_selection_card
-        card = build_session_selection_card(ws, sessions, current_session_id=cur)
+        card = build_session_selection_card(ws, sessions, current_thread_id=cur)
         await reply.card( card)
         return
 
-    # --- /resume <session_id>: switch to one exact native session ---
+    # --- /resume <thread_id>: switch to one exact native thread ---
     if text_lower.startswith("/resume"):
         parts = text.split(None, 1)
         session = session_manager.get_user_session(open_id)
         if len(parts) < 2 or not parts[1].strip():
-            cur = session.claude_session_id if session else ""
+            cur = session.codex_thread_id if session else ""
             await reply.text(
-                f"当前 Claude Session: `{cur or '无'}`\n\n用法: `/resume <session_id>`",
+                f"当前 Codex Thread: `{cur or '无'}`\n\n用法: `/resume <thread_id>`",
             )
             return
         if not session:
             session = session_manager.create_session(open_id, chat_id)
-        await claude_cli_loop.cancel_and_wait(open_id)
-        session.claude_session_id = parts[1].strip()
+        await codex_cli_loop.cancel_and_wait(open_id)
+        session.codex_thread_id = parts[1].strip()
         session.context_tokens = 0
         session_manager.save_session(session)
         ws_config = preferences_manager.load_workspace_config(session.workspace)
@@ -1581,29 +1190,29 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         target_config = ws_config if (ws_config and ws_config.complete) else (cur_pref if cur_pref.complete else None)
 
         if target_config:
-            profiles = discover_profiles()
-            profile_label = profiles.get(target_config.model, {}).get("label", target_config.model)
+            models = discover_models()
+            model_label = models.get(target_config.model, {}).get("label", target_config.model)
             from app.feishu.cards import build_workspace_config_reuse_card
             reuse_card = build_workspace_config_reuse_card(
                 approval_id=uuid.uuid4().hex[:12],
                 workspace=session.workspace,
-                profile_label=profile_label,
-                level=target_config.level,
+                model_label=model_label,
+                effort=target_config.level,
                 mode=target_config.mode,
                 action_type="switch",
             )
             await reply.text(
-                f"🔑 已切换到 Claude Session `{session.claude_session_id}`。",
+                f"🔑 已切换到 Codex Thread `{session.codex_thread_id}`。",
             )
             await reply.card( reuse_card)
         else:
             preferences_manager.clear(open_id)
             await reply.text(
-                f"🔑 已切换到 Claude Session `{session.claude_session_id}`。\n"
+                f"🔑 已切换到 Codex Thread `{session.codex_thread_id}`。\n"
                 "运行参数已清空，请依次设置 `/model`、`/level`、`/mode`。",
             )
         return
-    # --- /continue [prompt]: resume most recent session via native --continue ---
+    # --- /continue [prompt]: resume most recent thread in workspace ---
     if text_lower.startswith("/continue"):
         parts = text.split(None, 1)
         session = session_manager.get_user_session(open_id)
@@ -1611,69 +1220,38 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             session = session_manager.create_session(open_id, chat_id)
 
         arg = parts[1].strip() if len(parts) > 1 else ""
-        # /continue <session_id> 形式不再有意义（claude 总是恢复最近会话），
-        # 但仍接受参数当作普通提示处理。
         prompt = arg if arg else "继续上次的任务"
 
-        # Force --continue even if myclaw has no recorded session: claude
-        # looks up the most recent session in the workspace itself. Sentinel
-        # just makes _start_process append --continue.
-        if not session.claude_session_id:
-            session.claude_session_id = "__continue__"
+        # Force resume-latest even if myclaw has no recorded thread: the
+        # sentinel resolves to the workspace's newest thread at spawn time.
+        if not session.codex_thread_id:
+            session.codex_thread_id = "__continue__"
             session_manager.save_session(session)
-            preferences_manager.clear(open_id)
-        await _run_claude(prompt, open_id, session, skip_classify=True)
+        await _run_codex(prompt, open_id, session, skip_classify=True)
         return
 
-    # --- /new: reset native session and runtime preferences ---
+    # --- /new: reset native thread and runtime preferences ---
     if text_lower == "/new":
-        await claude_cli_loop.cancel_and_wait(open_id)
+        await codex_cli_loop.cancel_and_wait(open_id)
         session = session_manager.reset_user_session(open_id)
-
-        # Create a cli-born stub session via PTY so the local claude picker
-        # can see this session (SDK-launched sessions get tagged sdk-cli and
-        # are filtered out of the picker). On failure, fall back to legacy
-        # behavior — first message will launch with sdk-cli.
-        stub_session_id: str | None = None
-        stub_error: str | None = None
-        try:
-            from app.agent.pty_stub import create_cli_born_session
-            stub_session_id = create_cli_born_session(session.workspace)
-        except Exception as e:
-            stub_error = f"{type(e).__name__}: {e}"
-            logger.warning("PTY stub creation failed: %s", stub_error)
-
-        if stub_session_id:
-            session.claude_session_id = stub_session_id
-            session_manager.save_session(session)
-            session_line = (
-                f"🔑 Claude Session: `{stub_session_id}`\n"
-                f"✅ 已创建 cli-born stub，本机 picker 可见"
-            )
-        else:
-            session_line = (
-                f"🔑 Claude Session: `待生成 (首条消息后以 sdk-cli 启动)`\n"
-                f"⚠️ PTY stub 创建失败：{stub_error}\n"
-                f"   会话仍可正常使用"
-            )
 
         ws_config = preferences_manager.load_workspace_config(session.workspace)
         if ws_config and ws_config.complete:
-            profiles = discover_profiles()
-            profile_label = profiles.get(ws_config.model, {}).get("label", ws_config.model)
+            models = discover_models()
+            model_label = models.get(ws_config.model, {}).get("label", ws_config.model)
             from app.feishu.cards import build_workspace_config_reuse_card
             reuse_card = build_workspace_config_reuse_card(
                 approval_id=uuid.uuid4().hex[:12],
                 workspace=session.workspace,
-                profile_label=profile_label,
-                level=ws_config.level,
+                model_label=model_label,
+                effort=ws_config.level,
                 mode=ws_config.mode,
                 action_type="new",
             )
             await reply.text(
                 f"✨ 新会话已重置。\n"
                 f"📁 工作区: `{session.workspace}`\n"
-                f"{session_line}",
+                f"🔑 Codex Thread: `新 Thread（发送首条消息时创建）`",
             )
             await reply.card( reuse_card)
         else:
@@ -1681,7 +1259,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             await reply.text(
                 f"✨ 新会话已重置。\n"
                 f"📁 工作区: `{session.workspace}`\n"
-                f"{session_line}\n"
+                f"🔑 Codex Thread: `新 Thread（发送首条消息时创建）`\n"
                 "运行参数已清空，请依次设置 `/model`、`/level`、`/mode`。",
             )
         return
@@ -1697,25 +1275,15 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             await reply.text( "没有活跃会话。")
         return
 
-    # --- /compact: trigger CLI's built-in compact on current session ---
+    # --- /compact: not supported by codex ---
     if text_lower == "/compact":
-        if not settings.compact_enabled:
-            await reply.text( "压缩功能已禁用。请联系管理员开启。")
-            return
-        session = session_manager.get_user_session(open_id)
-        if not session or not session.claude_session_id:
-            await reply.text(
-                "没有活跃的 Claude 会话，无法压缩。\n"
-                "先发一条消息启动会话，上下文不足时再使用 `/compact`。",
-            )
-            return
         await reply.text(
-            "🧹 已启动上下文压缩 (Compact)，正在为您整理与压缩当前 Session 的上下文历史...",
+            "ℹ️ Codex CLI 暂不支持上下文压缩。\n"
+            "建议使用 `/new` 开始新会话（codex 的会话历史仍保留在 `~/.codex/sessions`，可随时 `/session` 找回）。",
         )
-        await _run_claude("/compact", open_id, session, skip_classify=True)
         return
 
-    # --- /mem: workspace memo in CLAUDE.md ---
+    # --- /mem: workspace memo in AGENTS.md ---
     # `/mem`           → show current content
     # `/mem <text>`    → append a line
     # `/mem clear`     → wipe
@@ -1723,7 +1291,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         arg = text[4:].strip()  # text after "/mem"
         session = session_manager.get_user_session(open_id)
         workspace = session.workspace if session else settings.get_default_workspace()
-        memory_md = Path(workspace) / "CLAUDE.md"
+        memory_md = Path(workspace) / "AGENTS.md"
 
         # `/mem` (no arg) → list current memory
         if not arg:
@@ -1732,7 +1300,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
                     body = memory_md.read_text("utf-8")
                 else:
                     await reply.text(
-                        f"📝 当前工作区 `{workspace}` 还没有 CLAUDE.md。\n"
+                        f"📝 当前工作区 `{workspace}` 还没有 AGENTS.md。\n"
                         f"用法：`/mem <内容>` 追加；`/mem clear` 清空。",
                     )
                     return
@@ -1745,7 +1313,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
                     preview = body[:PREVIEW_LIMIT]
                     trunc_note = f"\n\n…（共 {char_count} 字符，仅显示前 {PREVIEW_LIMIT}）"
                 await reply.text(
-                    f"📝 `{workspace}` 的 CLAUDE.md（{char_count} 字符）：\n```\n{preview}```{trunc_note}",
+                    f"📝 `{workspace}` 的 AGENTS.md（{char_count} 字符）：\n```\n{preview}```{trunc_note}",
                 )
             except Exception as e:
                 await reply.text( f"读取失败: {e}")
@@ -1756,10 +1324,10 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             try:
                 if memory_md.exists():
                     memory_md.unlink()
-                    await reply.text( f"已清空 `{workspace}` 下的 CLAUDE.md。",
+                    await reply.text( f"已清空 `{workspace}` 下的 AGENTS.md。",
                     )
                 else:
-                    await reply.text( f"`{workspace}` 下没有 CLAUDE.md，无需清空。",
+                    await reply.text( f"`{workspace}` 下没有 AGENTS.md，无需清空。",
                     )
             except Exception as e:
                 await reply.text( f"清空失败: {e}")
@@ -1773,20 +1341,9 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
                 memory_md.write_text(existing + "\n" + content + "\n", "utf-8")
             else:
                 memory_md.write_text(content + "\n", "utf-8")
-            await reply.text( f"已记录到 `{workspace}` 下的 CLAUDE.md")
+            await reply.text( f"已记录到 `{workspace}` 下的 AGENTS.md")
         except Exception as e:
             await reply.text( f"写入失败: {e}")
-    # --- /balance [profile]: query API balance for DeepSeek / GLM ---
-    if text_lower == "/balance" or text_lower.startswith("/balance "):
-        target_profile = text[8:].strip() or None
-        from app.balance import get_profile_balance
-        from app.feishu.cards import build_balance_card
-
-        await reply.text( "🔍 正在查询 API 供应商余额...")
-        balance_res = await get_profile_balance(target_profile)
-        card = build_balance_card(balance_res)
-        await reply.card( card)
-        return
 
     # --- /notes: write output or text to notes.md ---
     # `/notes last`    → write last execution's final output to notes.md
@@ -1812,7 +1369,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
                 "📝 用法：\n"
                 "• `/notes last` — 追加上一次任务执行完成的最终输出到 `notes.md`\n"
                 "• `/notes <task_id>` — 追加特定 task_id 的执行完成卡片内容到 `notes.md`\n"
-                "• `/notes <内容>` — 将自定义文本追加写入 `notes.md`",
+                "• `/notes <内容>` — 将自定义文本追加写入到 `notes.md`",
             )
             return
 
@@ -1825,7 +1382,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
 
         # 1. Check if 'last'
         if clean_arg.lower() == "last":
-            last_res = claude_cli_loop.get_last_result(open_id)
+            last_res = codex_cli_loop.get_last_result(open_id)
             if not last_res or not last_res.text:
                 await reply.text( "⚠️ 未找到上一次执行完成的结果记录。",
                 )
@@ -1834,14 +1391,14 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             source_desc = f"上一次任务 (`{last_res.task_id}`)"
         else:
             # 2. Check if clean_arg matches a recorded task_id
-            task_res = claude_cli_loop.get_task_result(open_id, clean_arg)
+            task_res = codex_cli_loop.get_task_result(open_id, clean_arg)
             if task_res and task_res.text:
                 content_to_write = task_res.text
                 source_desc = f"任务 (`{task_res.task_id}`)"
             elif re.match(r"^[a-fA-F0-9]{12}$", clean_arg):
                 await reply.text(
                     f"⚠️ 未找到任务 ID 为 `{clean_arg}` 的历史执行记录。\n"
-                    f"💡 提示：服务重启或重置会清空内存记录；您可使用 `/notes last` 追加最近一次任务结果。",
+                    f"💡 提示：服务重启或重置会话会清空内存记录；您可使用 `/notes last` 追加最近一次任务结果。",
                 )
                 return
             else:
@@ -1909,23 +1466,23 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         await reply.text( "\n".join(parts))
         return
 
-    # --- Default: run Claude CLI ---
-    await _run_claude(text, open_id, chat_id=chat_id if is_group else "")
+    # --- Default: run Codex CLI ---
+    await _run_codex(text, open_id, chat_id=chat_id if is_group else "")
 
 
-async def _run_claude(
+async def _run_codex(
     prompt: str,
     open_id: str,
     session: Session | None = None,
     skip_classify: bool = False,
-    resume_session_id: str | None = None,
+    resume_thread_id: str | None = None,
     chat_id: str = "",
 ) -> None:
-    """Run Claude CLI with optional model selection card for first message.
+    """Run Codex CLI with optional setup cards for first message.
 
-    resume_session_id: if set, start claude with ``--resume <id>`` to
-    continue a specific session (used by /resume <id>). When None, the
-    claude_session_id on the session drives ``--continue``.
+    resume_thread_id: if set, start codex with ``resume <id>`` to
+    continue a specific thread (used by /resume <id>). When None, the
+    codex_thread_id on the session drives thread continuity.
     """
     audit_logger.log_command_received(open_id, prompt, "started")
     reply = ReplyChannel(open_id, chat_id, bool(chat_id))
@@ -1941,50 +1498,50 @@ async def _run_claude(
             session_manager.save_session(session)
 
         preferences = preferences_manager.get(open_id)
-        profiles = discover_profiles()
+        models = discover_models()
 
         # After a recent /cd into a new workspace, ask whether to reuse last
-        # provider/model/mode before running. Only trigger if prefs are complete
+        # model/effort/mode before running. Only trigger if prefs are complete
         # (otherwise the existing "first-time setup" path below handles it).
         if session.pending_reuse_confirm and preferences.complete:
             session.pending_prompt = prompt
             session_manager.save_session(session)
             from app.feishu.cards import build_reuse_last_card
-            profile_label = profiles.get(preferences.model, {}).get("label", preferences.model)
+            model_label = models.get(preferences.model, {}).get("label", preferences.model)
             await reply.card(
                 build_reuse_last_card(
                     approval_id=uuid.uuid4().hex[:12],
-                    profile_label=profile_label,
-                    level=preferences.level,
+                    model_label=model_label,
+                    effort=preferences.level,
                     mode=preferences.mode,
                 ),
             )
             return
 
-        need_provider = preferences.model not in profiles
-        need_level = preferences.level not in ("haiku", "sonnet", "opus")
+        need_model = preferences.model not in models
+        need_level = preferences.level not in VALID_EFFORTS
         need_mode = preferences.mode not in ("h", "m", "l")
 
-        if need_provider or need_level or need_mode:
+        if need_model or need_level or need_mode:
             session.pending_prompt = prompt
             session_manager.save_session(session)
 
             missing_cards = []
-            if need_provider:
-                from app.feishu.cards import build_profile_selection_card
-                missing_cards.append(
-                    build_profile_selection_card(
-                        approval_id=uuid.uuid4().hex[:12],
-                        profiles=profiles,
-                        active_profile="",
-                    )
-                )
-            if need_level:
+            if need_model:
                 from app.feishu.cards import build_model_selection_card
                 missing_cards.append(
                     build_model_selection_card(
                         approval_id=uuid.uuid4().hex[:12],
-                        current_model="",
+                        models=models,
+                        current_model=preferences.model if not need_model else "",
+                    )
+                )
+            if need_level:
+                from app.feishu.cards import build_effort_selection_card
+                missing_cards.append(
+                    build_effort_selection_card(
+                        approval_id=uuid.uuid4().hex[:12],
+                        current_effort="",
                     )
                 )
             if need_mode:
@@ -2006,43 +1563,52 @@ async def _run_claude(
             )
             return
 
-        agent_result = await claude_cli_loop.send_and_wait(
+        agent_result = await codex_cli_loop.send_and_wait(
             prompt=prompt,
             open_id=open_id,
             workspace=session.workspace,
-            model=preferences.level,
+            model=preferences.model,
+            effort=preferences.level,
             approval_mode=preferences.mode,
-            profile_name=preferences.model,
-            claude_session_id=session.claude_session_id or None,
-            resume_session_id=resume_session_id,
+            codex_thread_id=session.codex_thread_id or None,
+            resume_thread_id=resume_thread_id,
             chat_id=chat_id,
         )
-        # Auto-heal: if process failed because Session ID does not exist on disk
+        # Auto-heal: if the run failed because the recorded thread id no
+        # longer exists on disk, fall back to a fresh thread and retry once.
         err_msg = (agent_result.error or "") + (agent_result.text or "")
-        if "No conversation found with session ID" in err_msg or "进程通信中断" in err_msg:
-            logger.warning("Session ID invalid/lost for user %s, auto-healing...", open_id)
-            session.claude_session_id = "__continue__"
+        err_lower = err_msg.lower()
+        if (
+            session.codex_thread_id
+            and session.codex_thread_id != "__continue__"
+            and agent_result.status != "completed"
+            and any(k in err_lower for k in (
+                "no session", "not found", "no such", "does not exist",
+                "failed to resume", "invalid session",
+            ))
+        ):
+            logger.warning("Thread ID invalid/lost for user %s, auto-healing...", open_id)
+            session.codex_thread_id = ""
             session_manager.save_session(session)
             await reply.text(
                 "ℹ️ 检测到历史会话 ID 已在磁盘上失效，已全自动为您重新生成会话并执行任务...",
             )
-            await _run_claude(prompt, open_id, session, skip_classify=True)
+            await _run_codex(prompt, open_id, session, skip_classify=True)
             return
 
         # Process was killed (switch/stop/new) — caller already notified user
         if agent_result.status == "cancelled":
             return
 
-        # Preserve the last known-good ID on transient execution failures.
-        # /new and workspace changes are the explicit reset operations.
-        if agent_result.session_id:
-            session.claude_session_id = agent_result.session_id
-            append_to_claude_history(session.workspace, agent_result.session_id, prompt)
+        # Preserve the last known-good thread on success. /new and workspace
+        # changes are the explicit reset operations.
+        if agent_result.thread_id:
+            session.codex_thread_id = agent_result.thread_id
         if agent_result.input_tokens > 0:
             session.context_tokens = agent_result.input_tokens
-        # NOTE: agent_messages intentionally not appended — claude already
-        # persists the full conversation in ~/.claude/projects/*/<sid>.jsonl,
-        # which _iter_claude_session_messages reads back on demand.
+        # NOTE: agent_messages intentionally not appended — codex already
+        # persists the full conversation in ~/.codex/sessions, which
+        # iter_thread_messages reads back on demand.
 
         # Persist session to disk
         session_manager.save_session(session)
