@@ -36,7 +36,7 @@ from app.models.schemas import AgentResult, ToolCallRecord
 from app.audit.logger import audit_logger
 from app.agent.codex_sessions import latest_thread_for_workspace
 
-logger = logging.getLogger("myclaw.cli_loop")
+logger = logging.getLogger("mycodex.cli_loop")
 
 # Map codex_thread_id -> {open_id, approval_mode}
 session_registry: dict[str, dict] = {}

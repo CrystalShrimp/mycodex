@@ -4,7 +4,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ===================================================
-echo           MyClaw 一键自检和自动安装向导
+echo           MyCodex 一键自检和自动安装向导
 echo ===================================================
 echo.
 
@@ -151,7 +151,7 @@ echo [OK] Codex CLI 自检通过！
 goto CODEX_LOGIN
 
 :CODEX_ASK
-echo [!] 警告: 未检测到 Codex CLI (myclaw 的任务执行引擎)。
+echo [!] 警告: 未检测到 Codex CLI (mycodex 的任务执行引擎)。
 set /p CHOICE_CODEX="[?] 是否自动安装 OpenAI Codex CLI (npm 全局安装，国内镜像)？ [Y/N]: "
 if /i not "%CHOICE_CODEX%"=="Y" if /i not "%CHOICE_CODEX%"=="" goto CODEX_SKIP
 echo [!] 正在通过 npmmirror 安装 @openai/codex ...
@@ -174,9 +174,9 @@ if not errorlevel 1 (
     echo [OK] Codex 登录态自检通过（ChatGPT 账号已登录）！
     goto FINISH
 )
-echo [!] 警告: Codex 未登录。MyClaw 依赖本机已登录的 ChatGPT 账号执行任务。
+echo [!] 警告: Codex 未登录。MyCodex 依赖本机已登录的 ChatGPT 账号执行任务。
 echo     请手动在终端执行: codex login
-echo     完成浏览器授权后再启动 MyClaw。
+echo     完成浏览器授权后再启动 MyCodex。
 
 :CODEX_SKIP
 
@@ -191,12 +191,12 @@ echo.
 echo 接下来请:
 echo   1. 双击 auto_feishu\setup.cmd 一键配置飞书机器人 (自动写入 .env 凭据)
 echo   2. 确认终端执行 codex login 已完成 ChatGPT 登录
-echo   3. 双击 MyClaw.bat 启动服务
+echo   3. 双击 MyCodex.bat 启动服务
 echo   4. 在 .env 的 ALLOWED_USERS 中加入使用者飞书 Open ID (留空=不限制)
 
 if not exist "scripts\setup_autostart.bat" goto END_ALL
 echo.
-set /p CHOICE_AUTO="[?] 是否设置每次开机自动后台运行（托盘常驻，后续可 MyClaw 自管理）？ [Y/N]: "
+set /p CHOICE_AUTO="[?] 是否设置每次开机自动后台运行（托盘常驻，后续可 MyCodex 自管理）？ [Y/N]: "
 if /i "%CHOICE_AUTO%"=="Y" call "scripts\setup_autostart.bat"
 
 :END_ALL

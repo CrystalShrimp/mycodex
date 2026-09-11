@@ -1,5 +1,5 @@
 [project]
-name = "myclaw"
+name = "mycodex"
 version = "0.1.0"
 description = "Feishu Bot for Remote Claude Code Operation"
 requires-python = ">=3.12"

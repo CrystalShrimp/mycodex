@@ -1,6 +1,6 @@
-# MyClaw 配置指南（给 Agent 看）
+# MyCodex 配置指南（给 Agent 看）
 
-> 这份文档面向**帮客户部署 MyClaw 的 Agent**（人或不人）。读完应能：
+> 这份文档面向**帮客户部署 MyCodex 的 Agent**（人或不人）。读完应能：
 > 1. 在 10 分钟内完成一台 Windows 机器的部署
 > 2. 用 **Auto feishu** 一键完成飞书开放平台配置（5 分钟，客户只登录一次）
 > 3. 处理 90% 的个性化需求（快捷命令、权限、自启动、profile 切换）
@@ -9,9 +9,9 @@
 
 ---
 
-## 1. MyClaw 是什么（30 秒版）
+## 1. MyCodex 是什么（30 秒版）
 
-把客户本机已装好的 Claude Code CLI 包装成飞书机器人。飞书消息 → MyClaw 调本地 `claude` → 流式回飞书卡片，写文件/跑命令前弹审批卡片。**代码、API Key、对话历史全部留在客户本机**。
+把客户本机已装好的 Claude Code CLI 包装成飞书机器人。飞书消息 → MyCodex 调本地 `claude` → 流式回飞书卡片，写文件/跑命令前弹审批卡片。**代码、API Key、对话历史全部留在客户本机**。
 
 ---
 
@@ -35,8 +35,8 @@ Windows 上 Claude CLI 通过 `shutil.which()` 解析，会自动找到 `claude.
 ## 3. 一键部署流程
 
 ```bash
-# 1. 把项目放到目标目录（假设 D:\ForRunning\ForDev\myclaw）
-cd D:\ForRunning\ForDev\myclaw
+# 1. 把项目放到目标目录（假设 D:\ForRunning\ForDev\mycodex）
+cd D:\ForRunning\ForDev\mycodex
 
 # 2. 安装 Python 依赖（会自动建 .venv）
 uv sync
@@ -109,8 +109,8 @@ uv run python -m app.main
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `MYCLAW_HOST` | `localhost` | hook 脚本回调 myclaw 的地址 |
-| `INSTANCE_LOCK_PORT` | `48922` | 单实例锁端口（与同机 myclaw 错开） |
+| `MYCODEX_HOST` | `localhost` | hook 脚本回调 mycodex 的地址 |
+| `INSTANCE_LOCK_PORT` | `48922` | 单实例锁端口（与同机 mycodex 错开） |
 
 ### 4.6 访问控制
 
@@ -118,7 +118,7 @@ uv run python -m app.main
 |---|---|---|
 | `ALLOWED_USERS` | `""` | 允许的 open_id 白名单，逗号分隔；**空 = 全部允许**（生产环境强烈建议填） |
 
-获取 open_id 的方式：让用户先在飞书发任意消息。若其不在白名单内，机器人会直接回复一条包含其 Open ID 和加白指引的消息（自助式）；也可从 `myclaw.log` 里的 `From ou_xxx: ...` 日志获取。
+获取 open_id 的方式：让用户先在飞书发任意消息。若其不在白名单内，机器人会直接回复一条包含其 Open ID 和加白指引的消息（自助式）；也可从 `mycodex.log` 里的 `From ou_xxx: ...` 日志获取。
 
 ### 4.7 审计 / 服务
 
@@ -126,7 +126,7 @@ uv run python -m app.main
 |---|---|---|
 | `AUDIT_LOG_PATH` | `./logs/audit.log` | 审计日志位置（JSON-lines） |
 | `HOST` | `0.0.0.0` | FastAPI 监听地址 |
-| `PORT` | `8090` | FastAPI 监听端口（与同机 myclaw 的 8080 错开） |
+| `PORT` | `8090` | FastAPI 监听端口（与同机 mycodex 的 8080 错开） |
 
 ---
 
@@ -169,9 +169,9 @@ Profile 决定走哪家大模型。一个 profile = 一个 `config/settings_<nam
 | `env.ANTHROPIC_DEFAULT_HAIKU/SONNET/OPUS_MODEL` | 推荐 | 把 `haiku/sonnet/opus` 别名翻译成具体型号 |
 | `env.API_TIMEOUT_MS` | 可选 | 单次 API 调用超时（毫秒），长任务建议设大 |
 | `env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | 可选 | `1`=关闭遥测 |
-| `permissions` | 可选 | 该 profile 下的工具权限白名单（**会被 myclaw 的 `claude_settings.json` 覆盖**） |
+| `permissions` | 可选 | 该 profile 下的工具权限白名单（**会被 mycodex 的 `claude_settings.json` 覆盖**） |
 | `model` | 可选 | **仅用于 `/provider` 卡片显示**，不参与决策（想改默认档位用 `/model` 命令） |
-| `skipDangerousModePermissionPrompt` | 可选 | `true`=跳过 CLI 终端危险确认（MyClaw 用飞书审批替代） |
+| `skipDangerousModePermissionPrompt` | 可选 | `true`=跳过 CLI 终端危险确认（MyCodex 用飞书审批替代） |
 
 ### 5.3 添加新供应商
 
@@ -195,7 +195,7 @@ notepad config/settings_<新名字>.json
 `config/active_profile` 是单行文本文件，内容是当前 active 的 profile 名（如 `glm`）。
 
 - 切换方式：飞书里发 `/provider glm`（或 `/provider`，弹卡片选）
-- 切换后：MyClaw 写标记文件 → kill 当前 CLI 进程 → POST `{base_url}/messages` 测连通
+- 切换后：MyCodex 写标记文件 → kill 当前 CLI 进程 → POST `{base_url}/messages` 测连通
 - 文件为空或指向不存在的 profile：`get_active_profile()` 返回 `"unknown"`，子进程不注入 env，claude 报 `not logged in`（启动时 lifespan 会主动向 `ALLOWED_USERS` 提示）
 
 ---
@@ -218,7 +218,7 @@ Auto feishu 启动 Playwright 浏览器，模拟人工点击完成下面全部�
 4. 抓取 App ID / App Secret / Verification Token，**只写入项目根目录 `.env`**（不存 Secret 到 result 文件）
 5. 配置事件订阅方式为长连接，订阅 `im.message.receive_v1`
 6. 配置回调方式为长连接，订阅 `card.action.trigger`
-7. 启动本地 MyClaw 服务，或校验已运行（事件订阅要求网关在线）
+7. 启动本地 MyCodex 服务，或校验已运行（事件订阅要求网关在线）
 8. 创建并发布应用版本
 9. 写入 `auto_feishu/feishu-app-result.json`（不含 Secret，含 appId、maskedSecret、完成步骤、artifacts 路径）
 
@@ -226,7 +226,7 @@ Auto feishu 启动 Playwright 浏览器，模拟人工点击完成下面全部�
 
 - 客户机 Node.js ≥ 20（`node --version` 检查；Auto feishu 的 `engines.node` 要求）
 - 客户的飞书账号能登录 https://open.feishu.cn，且在企业管理员通过的租户内
-- 项目根目录已 `uv sync` 安装好 Python 依赖（Auto feishu 会启动 MyClaw 校验健康）
+- 项目根目录已 `uv sync` 安装好 Python 依赖（Auto feishu 会启动 MyCodex 校验健康）
 - 端口 8090 未被占用（或修改 `.env` 的 `PORT` + `auto_feishu/config.json` 的 `localServiceUrl` 保持一致）
 
 #### 6.1.3 一键运行
@@ -234,7 +234,7 @@ Auto feishu 启动 Playwright 浏览器，模拟人工点击完成下面全部�
 Windows 客户终端：
 
 ```bat
-cd D:\ForRunning\ForDev\myclaw\auto_feishu
+cd D:\ForRunning\ForDev\mycodex\auto_feishu
 setup.cmd
 ```
 
@@ -273,10 +273,10 @@ npm run feishu:observe
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `appName` | `"myclaw"` | 飞书应用显示名（按客户品牌改，例如 `"MyClaw 助手"`） |
-| `appDescription` | `"用于接入 myclaw 的飞书机器人"` | 应用描述 |
+| `appName` | `"mycodex"` | 飞书应用显示名（按客户品牌改，例如 `"MyCodex 助手"`） |
+| `appDescription` | `"用于接入 mycodex 的飞书机器人"` | 应用描述 |
 | `appIconPath` | `"./icon.png"` | 应用图标路径（不存在则跳过） |
-| `botName` | `"myclaw 助手"` | 机器人显示名 |
+| `botName` | `"mycodex 助手"` | 机器人显示名 |
 | `reuseStartedApp` | `false` | 是否优先复用"已启动"状态的应用 |
 | `permissionsImportJsonPath` | `"./feishu-permissions.json"` | 权限 JSON 路径（22+3 scope） |
 | `enableGroupMessagePermission` | `true` | 是否启用群消息权限 |
@@ -285,7 +285,7 @@ npm run feishu:observe
 | `publishAfterSetup` | `true` | 完成后自动创建版本并发布 |
 | `envPath` | `"../.env"` | 凭据写入位置（项目根目录 `.env`） |
 | `localServiceUrl` | `"http://127.0.0.1:8090/health"` | 本地服务健康检查 URL |
-| `localServiceRootDir` | `".."` | 本地服务根目录（用于启动 MyClaw） |
+| `localServiceRootDir` | `".."` | 本地服务根目录（用于启动 MyCodex） |
 | `startLocalService` | `true` | 是否自动启动本地服务（事件订阅要求网关在线） |
 | `localServiceWaitMs` | `30000` | 本地服务启动等待上限 |
 | `resultPath` | `"./feishu-app-result.json"` | 交付结果 JSON（不含 Secret） |
@@ -303,7 +303,7 @@ npm run feishu:observe
 | 改应用名为客户品牌 | `appName` / `appDescription` / `botName`（注意：仅对**新创建**的应用生效；已创建的应用要手工去飞书后台改） |
 | 不自动发布版本（手工审一遍再发） | `publishAfterSetup: false` |
 | 不自动启动本地服务（已在外部启动） | `startLocalService: false` |
-| 改端口 | 同时改 `.env` 的 `PORT` + `MYCLAW_PORT` + 这里 `localServiceUrl` |
+| 改端口 | 同时改 `.env` 的 `PORT` + `MYCODEX_PORT` + 这里 `localServiceUrl` |
 
 #### 6.1.6 失败恢复与续跑
 
@@ -339,7 +339,7 @@ Auto feishu **可重复运行**，每次会：
 - `appId` 非空，`maskedSecret` 形如 `a3hl****Cilc`
 - `failure` = `null`
 
-随后在飞书向机器人发条消息（如"你好"），确认 `myclaw.log` 出现 `From ou_xxx:` 日志且机器人有回复。
+随后在飞书向机器人发条消息（如"你好"），确认 `mycodex.log` 出现 `From ou_xxx:` 日志且机器人有回复。
 
 #### 6.1.8 安全约束
 
@@ -358,7 +358,7 @@ Auto feishu **可重复运行**，每次会：
 | 卡在登录页 | 代理把 `open.feishu.cn` 走了代理 | 清理 `HTTP_PROXY` 环境变量或代理规则里把 `feishu.cn` 设为直连 |
 | 登录后无反应 | 客户账号不是企业管理员、或租户未开通自建应用权限 | 换企业管理员账号或联系租户管理员 |
 | 权限导入失败 | 飞书改了 Monaco 编辑器或批量导入入口 | 看 `artifacts/screenshots/` 最新截图定位；或暂时改用 §6.2 手工方案 |
-| 事件订阅保存失败 | 本地 MyClaw 服务未在线（事件订阅要求网关先在线） | 先 `uv run python -m app.main` 起服务，再重跑 |
+| 事件订阅保存失败 | 本地 MyCodex 服务未在线（事件订阅要求网关先在线） | 先 `uv run python -m app.main` 起服务，再重跑 |
 | 发布失败：可用范围不足 | 企业策略要求可用范围必须指定 | 手工去飞书后台「版本管理与发布」补可用范围 |
 | `status: "failed"` 反复 | 飞书页面改版 | 跑 `npm run feishu:setup:debug` 拿详细日志，对照 `doc/auto.md` 排查；或暂时改用 §6.2 手工方案 |
 
@@ -370,7 +370,7 @@ Auto feishu **可重复运行**，每次会：
 2. **应用功能 → 机器人** → 开启
 3. **权限管理 → 批量导入** → 粘贴 `scripts/feishu_bot/openclaw-scopes.json`（22 tenant + 3 user scope）→ 申请开通
 4. **凭证与基础信息** → 复制 App ID / App Secret，手工填到 `.env`
-5. 启动本地 MyClaw 服务（`uv run python -m app.main`）
+5. 启动本地 MyCodex 服务（`uv run python -m app.main`）
 6. **事件与回调 → 事件配置** → 选**长连接**模式 → 添加 `im.message.receive_v1`
 7. **事件与回调 → 回调配置** → 选**长连接**模式 → 添加 `card.action.trigger`
 8. **版本管理与发布** → 创建版本 → 提交（企业内部应用通常自动通过）
@@ -400,13 +400,13 @@ Auto feishu **可重复运行**，每次会：
 ```json
 {
   "开发根目录": "D:\\ForRunning\\ForDev",
-  "myclaw": "D:\\ForRunning\\ForDev\\openclaw",
+  "mycodex": "D:\\ForRunning\\ForDev\\openclaw",
   "指数复现": "D:\\ForRunning\\ForQuant\\projects\\recur_gz",
   "默认目录": "D:\\ForRunning\\ForDev\\0_default"
 }
 ```
 
-修改后**立即生效**，无需重启。客户在飞书发 `/cd myclaw` 即可切到对应绝对路径。
+修改后**立即生效**，无需重启。客户在飞书发 `/cd mycodex` 即可切到对应绝对路径。
 
 ### 7.2 修改 mode 权限的 Bash 白/黑名单
 
@@ -437,11 +437,11 @@ Auto feishu **可重复运行**，每次会：
 
 项目根目录已自带：
 
-- `MyClaw.bat`：直接启动托盘 + 后端服务
-- `MyClaw-Debug.bat`：开 console 模式，禁代理，检测端口占用，崩了不退出（看错误）
-- `MyClaw-Restart.bat`：杀掉旧进程并重启服务（直接用 .venv 的 python 跑 restart_service.py）
+- `MyCodex.bat`：直接启动托盘 + 后端服务
+- `MyCodex-Debug.bat`：开 console 模式，禁代理，检测端口占用，崩了不退出（看错误）
+- `MyCodex-Restart.bat`：杀掉旧进程并重启服务（直接用 .venv 的 python 跑 restart_service.py）
 
-把 `MyClaw.bat`（右键 → 创建快捷方式）放到启动文件夹：
+把 `MyCodex.bat`（右键 → 创建快捷方式）放到启动文件夹：
 
 ```
 Win+R → shell:startup → 回车 → 把快捷方式拖进去
@@ -454,8 +454,8 @@ Win+R → shell:startup → 回车 → 把快捷方式拖进去
 ```bat
 @echo off
 chcp 65001 >nul 2>&1
-title MyClaw Service
-cd /d D:\ForRunning\ForDev\myclaw
+title MyCodex Service
+cd /d D:\ForRunning\ForDev\mycodex
 
 :: 清理代理（避免飞书 API 走错出口）
 set HTTP_PROXY=
@@ -468,7 +468,7 @@ set all_proxy=
 :: 检查端口是否被占
 curl.exe --silent --fail --max-time 1 http://127.0.0.1:8090/health >nul 2>&1
 if not errorlevel 1 (
-    echo MyClaw is already running.
+    echo MyCodex is already running.
     timeout /t 3 >nul
     exit /b 0
 )
@@ -486,10 +486,10 @@ if not errorlevel 1 (
 
 托盘版特点：
 
-- 用 Windows Job Object 绑定子进程，托盘退出时 MyClaw 服务也退出（不会留孤儿进程）
+- 用 Windows Job Object 绑定子进程，托盘退出时 MyCodex 服务也退出（不会留孤儿进程）
 - 启动时自动检查 `http://127.0.0.1:8090/health`，已运行则不重复启动
-- 通过 `Global\MyClawTray` 互斥锁防止多开
-- 异常退出写 `myclaw-tray-error.log` + 弹 MessageBox
+- 通过 `Global\MyCodexTray` 互斥锁防止多开
+- 异常退出写 `mycodex-tray-error.log` + 弹 MessageBox
 
 把 `pythonw.exe scripts\tray.pyw` 的快捷方式放到 `shell:startup` 即开机自启。
 
@@ -543,7 +543,7 @@ APPROVAL_MODE=m                 # h=全自动 m=平衡 l=严格
 | 5 | 历史继承 | 切到老工作区发消息 | `/status` 显示消息数 > 0（说明 `--continue` 生效） |
 | 6 | mode l 审批 | `/mode l` 后让 claude 写文件 | 看到审批卡片 |
 | 7 | mode h 直通 | `/mode h` 后让 claude 写文件 | 无审批直接执行 |
-| 8 | 运行日志 | `tail -f logs/myclaw.log` | 无 ERROR / Exception |
+| 8 | 运行日志 | `tail -f logs/mycodex.log` | 无 ERROR / Exception |
 | 9 | 审计日志 | `tail -f logs/audit.log` | 能看到 `command_received` 记录 |
 | 10 | 卡片回调 | 点审批卡片按钮 | 看到 toast "已允许/已拒绝" |
 | 11 | profile 切换 | `/provider <另一个>` | 看到 toast "模型已切换" |
@@ -586,7 +586,7 @@ ls config/settings_*.json
 3. 添加的事件是否是 `im.message.receive_v1`
 4. 应用是否已发布且通过审批
 5. 当前用户是否在可用范围内
-6. `myclaw.log` 里有没有 `From ou_xxx:` 日志（有就说明收到了）
+6. `mycodex.log` 里有没有 `From ou_xxx:` 日志（有就说明收到了）
 
 如果Auto feishu 跑过但事件订阅没配好，看 `auto_feishu/feishu-app-result.json` 的 `eventSubscriptionConfigured` 是否 `true`；为 `false` 说明那一步失败了，重跑 `setup.cmd` 或按 §6.2 手工补。
 
@@ -596,7 +596,7 @@ ls config/settings_*.json
 
 1. 飞书开放平台 → 回调配置 → 是否选了**长连接**模式
 2. 添加的回调是否是 `card.action.trigger`
-3. `myclaw.log` 里有没有 `Card action: type=... act=...` 日志
+3. `mycodex.log` 里有没有 `Card action: type=... act=...` 日志
 4. 卡片模板里 `value.type` / `value.act` 是否和 router 里匹配
 
 ### 9.5 端口 8090 被占用
@@ -605,11 +605,11 @@ ls config/settings_*.json
 netstat -ano | findstr :8090    # Windows
 ```
 
-要么 kill 占用进程，要么改 `.env` 的 `PORT`（同时改 `MYCLAW_PORT` 和 `auto_feishu/config.json` 的 `localServiceUrl` 保持一致）。
+要么 kill 占用进程，要么改 `.env` 的 `PORT`（同时改 `MYCODEX_PORT` 和 `auto_feishu/config.json` 的 `localServiceUrl` 保持一致）。
 
 ### 9.6 进程异常退出循环
 
-看 `myclaw.log` 末尾的 `claude stderr:` 行，常见原因：
+看 `mycodex.log` 末尾的 `claude stderr:` 行，常见原因：
 
 - API Key 失效（重申请新 Key，更新 profile）
 - API 限流（升级套餐或换供应商）
@@ -618,7 +618,7 @@ netstat -ano | findstr :8090    # Windows
 
 ### 9.7 Windows 中文乱码
 
-`.bat` 文件首行加 `chcp 65001 >nul 2>&1`（切到 UTF-8）。`MyClaw-Debug.bat` 已自带。
+`.bat` 文件首行加 `chcp 65001 >nul 2>&1`（切到 UTF-8）。`MyCodex-Debug.bat` 已自带。
 
 ### 9.8 Auto feishu 反复失败
 
@@ -629,7 +629,7 @@ netstat -ano | findstr :8090    # Windows
 ## 10. 项目结构索引
 
 ```
-myclaw/                              # 项目根目录
+mycodex/                              # 项目根目录
 ├── .env                             # 环境变量（Auto feishu 会自动写飞书字段）
 ├── CLAUDEME.md                      # 本文件（Agent 配置指南）
 ├── config/
@@ -638,7 +638,7 @@ myclaw/                              # 项目根目录
 │   ├── settings_<name>.example.json # profile 模板
 │   ├── active_profile               # 当前 active profile 名
 │   ├── approval_rules.json          # 动态审批规则配置（工具白/黑名单）
-│   └── claude_settings.json         # MyClaw 自有 claude 配置（代码生成，别手改）
+│   └── claude_settings.json         # MyCodex 自有 claude 配置（代码生成，别手改）
 ├── app/
 │   ├── main.py                      # FastAPI 入口 + WS 长连接 + /health 端点
 │   ├── profiles.py                  # profile 切换、test_profile 测连通
@@ -657,7 +657,7 @@ myclaw/                              # 项目根目录
 │   ├── .env.example                 #   .env 样例模板
 │   └── settings_*.example.json      #   各种 API 供应商配置样例
 ├── logs/                            # 运行时日志目录
-│   ├── myclaw.log                   #   运行日志（10MB × 5 轮转）
+│   ├── mycodex.log                   #   运行日志（10MB × 5 轮转）
 │   └── audit.log                    #   审计日志（JSON-lines）
 ├── auto_feishu/                     # ★ 飞书一键自动化工具（Node.js + Playwright）
 │   ├── README.md                    #   自动化说明
@@ -670,7 +670,7 @@ myclaw/                              # 项目根目录
 │   │   ├── feishu-setup.ts          #   主自动化脚本
 │   │   └── feishu-observe.ts        #   仅观察录制（不改配置）
 │   ├── scripts/
-│   │   └── myclaw-post-setup.mjs    #   后置钩子
+│   │   └── mycodex-post-setup.mjs    #   后置钩子
 │   └── artifacts/                   #   截图 / HTML / storage state（别提交 Git）
 ├── scripts/
 │   ├── hooks/pre_tool_use.py        # PreToolUse hook 脚本（claude 子进程调用）
@@ -683,7 +683,7 @@ myclaw/                              # 项目根目录
 ├── flow/                            # 架构图
 ├── .preferences/                    # per-user 运行时偏好（自动生成）
 ├── .sessions/                       # per-user session 路由状态（自动生成）
-├── MyClaw.bat / MyClaw-Restart.bat  # Windows 启动器
+├── MyCodex.bat / MyCodex-Restart.bat  # Windows 启动器
 ├── pyproject.toml                   # Python 项目配置
 └── uv.lock                          # 依赖锁
 ```
@@ -697,6 +697,6 @@ myclaw/                              # 项目根目录
 - `scripts/feishu_bot/MANUAL_SETUP.md` — 飞书手工配置 8 步流程（兜底方案）
 - `doc/TROUBLESHOOTING.md` — 飞书 SDK 详细踩坑（loop 问题、卡片回调、API 注意事项）
 - `doc/auto.md` — 飞书开放平台自动化经验（Monaco 编辑器、checkpoint、发布流程等）
-- `doc/hook.md` — MyClaw 对 claude-code 的 6 大改造点 + Hook 审批系统架构深度分析
+- `doc/hook.md` — MyCodex 对 claude-code 的 6 大改造点 + Hook 审批系统架构深度分析
 - `flow/architecture.html` — HTML 架构图
 - `flow/ASYNC_FLOW_MERMAID.md` — Mermaid 流程图

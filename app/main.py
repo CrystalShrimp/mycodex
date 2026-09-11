@@ -21,7 +21,7 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler(),
         RotatingFileHandler(
-            "logs/myclaw.log",
+            "logs/mycodex.log",
             maxBytes=10 * 1024 * 1024,
             backupCount=5,
             encoding="utf-8",
@@ -31,7 +31,7 @@ logging.basicConfig(
 import socket
 import sys
 
-logger = logging.getLogger("myclaw.main")
+logger = logging.getLogger("mycodex.main")
 
 _instance_lock_socket: socket.socket | None = None
 
@@ -44,7 +44,7 @@ def ensure_single_instance(lock_port: int = 48921) -> None:
         _instance_lock_socket = sock
     except OSError:
         logger.warning(
-            "⚠️ [SingleInstance] MyClaw 已在后台运行中 (端口 %d 被占用)，无法重复启动。",
+            "⚠️ [SingleInstance] MyCodex 已在后台运行中 (端口 %d 被占用)，无法重复启动。",
             lock_port,
         )
         sys.exit(0)
@@ -82,7 +82,7 @@ async def lifespan(app: FastAPI):
         )
     workspace.mkdir(parents=True, exist_ok=True)
 
-    logger.info("myclaw starting...")
+    logger.info("mycodex starting...")
     logger.info("Default workspace: %s", workspace)
     logger.info("Allowed users: %s", settings.get_allowed_users() or "(all)")
     logger.info("Codex CLI: %s", settings.codex_cli_path)
@@ -117,11 +117,11 @@ async def lifespan(app: FastAPI):
     yield
 
     await feishu_client.close()
-    logger.info("myclaw stopped.")
+    logger.info("mycodex stopped.")
 
 
 app = FastAPI(
-    title="myclaw",
+    title="mycodex",
     description="Feishu Bot backed by Codex CLI",
     version="0.3.0",
     lifespan=lifespan,
@@ -156,7 +156,7 @@ if __name__ == "__main__":
             port=settings.port,
             reload=True,
             reload_includes=["*.py"],
-            reload_excludes=["logs/*", "logs/audit.log", "logs/myclaw.log", ".env", "*.log"],
+            reload_excludes=["logs/*", "logs/audit.log", "logs/mycodex.log", ".env", "*.log"],
         )
     else:
         uvicorn.run(

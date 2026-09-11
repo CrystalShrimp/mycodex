@@ -25,11 +25,11 @@ SERVICE_PORT = _service_port()
 def stop_existing_processes(current_pid: int) -> None:
     """清理本项目关联的所有 Python 进程（不分 .venv / Anaconda / 系统）与服务端口占用。
 
-    进程清杀委托给 scripts/stop_myclaw.ps1（-File 方式调用），该脚本只按
-    项目根路径匹配，不会误杀同机其他 MyClaw 系部署。
+    进程清杀委托给 scripts/stop_mycodex.ps1（-File 方式调用），该脚本只按
+    项目根路径匹配，不会误杀同机其他 MyCodex 系部署。
     """
     print("Stopping existing MyCodex processes and child workers...")
-    ps1 = Path(__file__).resolve().parent / "stop_myclaw.ps1"
+    ps1 = Path(__file__).resolve().parent / "stop_mycodex.ps1"
     try:
         res = subprocess.run(
             [
@@ -43,7 +43,7 @@ def stop_existing_processes(current_pid: int) -> None:
             if line:
                 print("Killed MyCodex process:", line)
         if res.returncode != 0:
-            print("stop_myclaw.ps1 warning:", (res.stderr or "").strip()[:200])
+            print("stop_mycodex.ps1 warning:", (res.stderr or "").strip()[:200])
     except Exception as e:
         print("Error stopping processes:", e)
 
@@ -80,11 +80,11 @@ def main():
     time.sleep(1)
 
     root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    bat_path = os.path.join(root_dir, "MyClaw.bat")
+    bat_path = os.path.join(root_dir, "MyCodex.bat")
 
-    print(f"Launching desktop application via MyClaw.bat: {bat_path}")
+    print(f"Launching desktop application via MyCodex.bat: {bat_path}")
 
-    # 使用 PowerShell 在当前用户 Active Session 下原生启动 MyClaw.bat
+    # 使用 PowerShell 在当前用户 Active Session 下原生启动 MyCodex.bat
     # list 形式传参，避免 shell 字符串在 bash/cmd/powershell 多层转义下被改写。
     bat_abs = str(Path(bat_path).resolve()).replace("'", "''")
     root_abs = str(Path(root_dir).resolve()).replace("'", "''")
@@ -116,7 +116,7 @@ def main():
     if success:
         print("SUCCESS: MyCodex backend is up. Tray icon may take a few more seconds; check system tray.")
     else:
-        print("WARNING: /health did not return 200 within 30s. Check logs/myclaw.log and myclaw-tray-error.log.")
+        print("WARNING: /health did not return 200 within 30s. Check logs/mycodex.log and mycodex-tray-error.log.")
 
 if __name__ == "__main__":
     main()

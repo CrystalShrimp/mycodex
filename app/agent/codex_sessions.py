@@ -18,7 +18,7 @@ import logging
 import os
 from pathlib import Path
 
-logger = logging.getLogger("myclaw.codex_sessions")
+logger = logging.getLogger("mycodex.codex_sessions")
 
 
 def codex_home() -> Path:

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from config.settings import settings
 
-logger = logging.getLogger("myclaw.audit")
+logger = logging.getLogger("mycodex.audit")
 
 
 class AuditLogger:

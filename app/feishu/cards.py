@@ -174,7 +174,7 @@ def build_workspace_config_reuse_card(
     mode: str,
     action_type: str = "switch",
 ) -> dict:
-    """当在工作区检测到 .myclaw/config.json 配置文件时弹出的沿用确认卡片。"""
+    """当在工作区检测到 .mycodex/config.json 配置文件时弹出的沿用确认卡片。"""
     mode_desc = {
         "h": "🛡️ 严格模式 (只读沙箱)",
         "m": "⚖️ 平衡模式 (写入限工作区)",
@@ -196,7 +196,7 @@ def build_workspace_config_reuse_card(
                     "tag": "lark_md",
                     "content": (
                         f"📁 **项目工作区：** `{workspace}`\n\n"
-                        "⚙️ **发现历史配置文件 (.myclaw/config.json)：**\n"
+                        "⚙️ **发现历史配置文件 (.mycodex/config.json)：**\n"
                         f"• 模型 (Model)：`{model_label}`\n"
                         f"• 推理强度 (Effort)：`{effort}`\n"
                         f"• 模式 (Mode)：`{mode_desc}`"
@@ -783,7 +783,7 @@ def build_session_selection_card(
 def build_help_card() -> dict:
     """构建 /help 指令手册交互卡片，采用 lark_md 渲染高亮且精美的指令菜单。"""
     help_md = (
-        "🤖 **MyClaw 飞书机器人指令手册** (Codex 驱动)\n\n"
+        "🤖 **MyCodex 飞书机器人指令手册** (Codex 驱动)\n\n"
         "**⚙️ 模型设置**\n"
         "- `/model [slug]` : 切换 Codex 模型 (如 gpt-5.6-terra, 不带参数弹卡片)\n"
         "- `/level [low|medium|high]` : 切换推理强度 (同 `/effort`)\n"
@@ -809,7 +809,7 @@ def build_help_card() -> dict:
     return {
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": "MyClaw 指令手册"},
+            "title": {"tag": "plain_text", "content": "MyCodex 指令手册"},
             "template": "purple",
         },
         "elements": [

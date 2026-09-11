@@ -246,9 +246,9 @@ function buildNextSteps(result: ResultState): string[] {
   }
 
   if (!result.eventSubscriptionConfigured) {
-    nextSteps.add("先在 myclaw 中添加 Feishu 渠道并启动网关，再返回飞书重试事件订阅。");
+    nextSteps.add("先在 mycodex 中添加 Feishu 渠道并启动网关，再返回飞书重试事件订阅。");
   } else {
-    nextSteps.add("启动 myclaw 网关。");
+    nextSteps.add("启动 mycodex 网关。");
   }
 
   if (!result.published) {
@@ -1922,7 +1922,7 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
         if (!(await pathExists(python))) {
           throw new Error(
             "本地 claw 服务无法启动：未找到 " + python +
-            "。请先在项目根目录运行 MyClaw-Setup.bat（或执行 uv sync）完成 Python 环境安装，再重跑 setup.cmd。"
+            "。请先在项目根目录运行 MyCodex-Setup.bat（或执行 uv sync）完成 Python 环境安装，再重跑 setup.cmd。"
           );
         }
         const bootLogPath = path.join(ctx.config.localServiceRootDir, "logs", "auto_feishu_service_boot.log");
@@ -1957,7 +1957,7 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
   throw new Error(
     "本地 claw 服务未达到可订阅状态：" + lastError
     + "。请确认根目录 .env 已写入 FEISHU_APP_ID/FEISHU_APP_SECRET，然后检查 "
-    + url + " 和 myclaw.log。"
+    + url + " 和 mycodex.log。"
     + (bootTail ? "\n服务启动日志最后几行：\n" + bootTail : "")
   );
 }
@@ -2771,7 +2771,7 @@ async function main(): Promise<void> {
     await persistResult(config, result);
 
     logger.info("项目文件结构：");
-    logger.info(". / myclaw_Installer.bat / myclaw_Installer.ps1 / config.json / feishu-permissions.json / package.json / README.md / tsconfig.json / src/feishu-setup.ts");
+    logger.info(". / mycodex_Installer.bat / mycodex_Installer.ps1 / config.json / feishu-permissions.json / package.json / README.md / tsconfig.json / src/feishu-setup.ts");
 
     const hasStorageState = await pathExists(config.storageStatePath);
     const hasUserData = await pathExists(config.userDataDirPath);
@@ -2907,7 +2907,7 @@ async function mainV2(): Promise<void> {
     await persistResult(config, result);
 
     logger.info("项目文件：");
-    logger.info(". / myclaw_Installer.bat / myclaw_Installer.ps1 / config.json / feishu-permissions.json / package.json / README.md / tsconfig.json / src/feishu-setup.ts");
+    logger.info(". / mycodex_Installer.bat / mycodex_Installer.ps1 / config.json / feishu-permissions.json / package.json / README.md / tsconfig.json / src/feishu-setup.ts");
 
     const hasStorageState = await pathExists(config.storageStatePath);
     const hasUserData = await pathExists(config.userDataDirPath);

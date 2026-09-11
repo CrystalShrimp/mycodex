@@ -29,7 +29,7 @@ def _env_port(default: int = 8090) -> int:
 
 SERVICE_PORT = _env_port()
 HEALTH_URL = f"http://127.0.0.1:{SERVICE_PORT}/health"
-LOG_PATH = ROOT / "logs" / "myclaw.log"
+LOG_PATH = ROOT / "logs" / "mycodex.log"
 WM_TRAY = 0x8001
 WM_COMMAND = 0x0111
 WM_DESTROY = 0x0002
@@ -210,7 +210,7 @@ def get_health_detail() -> tuple[bool, str]:
                 ws = "🟢 已连接" if data.get("ws_connected") else "🔴 未连接"
                 return True, f"✅ MyCodex 后端服务运行正常 (端口 {SERVICE_PORT})\n飞书长连接: {ws}"
     except Exception as e:
-        return False, f"❌ 后端服务未响应 ({SERVICE_PORT} 端口): {e}\n详情请查看 myclaw.log 日志。"
+        return False, f"❌ 后端服务未响应 ({SERVICE_PORT} 端口): {e}\n详情请查看 mycodex.log 日志。"
     return False, "❌ 后端服务未响应，请查看日志。"
 
 
@@ -258,8 +258,8 @@ def start_server() -> None:
         tail = ""
         if LOG_PATH.exists():
             tail = "\n".join(LOG_PATH.read_text("utf-8", errors="replace").splitlines()[-20:])
-        (ROOT / "myclaw-tray-error.log").write_text(
-            f"myclaw backend did not become healthy within 30s. Recent log tail:\n{tail}",
+        (ROOT / "mycodex-tray-error.log").write_text(
+            f"mycodex backend did not become healthy within 30s. Recent log tail:\n{tail}",
             encoding="utf-8",
         )
     except Exception:
@@ -347,5 +347,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        (ROOT / "myclaw-tray-error.log").write_text(traceback.format_exc(), encoding="utf-8")
+        (ROOT / "mycodex-tray-error.log").write_text(traceback.format_exc(), encoding="utf-8")
         message(str(exc), "mycodex 启动失败")

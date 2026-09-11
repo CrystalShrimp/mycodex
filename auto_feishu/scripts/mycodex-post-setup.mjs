@@ -21,9 +21,9 @@ function parseArgs(argv) {
 }
 
 function resolvePackageRoot() {
-  const packageRoot = process.env.MYCLAW_PACKAGE_ROOT?.trim();
+  const packageRoot = process.env.MYCODEX_PACKAGE_ROOT?.trim();
   if (!packageRoot) {
-    throw new Error("缺少 MYCLAW_PACKAGE_ROOT，无法定位 myclaw 安装目录。");
+    throw new Error("缺少 MYCODEX_PACKAGE_ROOT，无法定位 mycodex 安装目录。");
   }
 
   return path.resolve(packageRoot);
@@ -123,7 +123,7 @@ async function main() {
   const agentId = resolveDefaultAgentId(config);
   const workspaceDir = resolveAgentWorkspaceDir(config, agentId);
 
-  console.log(`[myclaw 自动补全] 工作区：${workspaceDir}`);
+  console.log(`[mycodex 自动补全] 工作区：${workspaceDir}`);
 
   const hookReport = buildWorkspaceHookStatus(workspaceDir, { config });
   const eligibleHooks = hookReport.hooks.filter((hook) => hook.eligible);
@@ -138,7 +138,7 @@ async function main() {
   const enabledHooks = [];
 
   if (eligibleHooks.length > 0) {
-    console.log(`[myclaw 自动补全] 正在启用 ${eligibleHooks.length} 个可用 hooks...`);
+    console.log(`[mycodex 自动补全] 正在启用 ${eligibleHooks.length} 个可用 hooks...`);
 
     const entries = { ...(config.hooks?.internal?.entries ?? {}) };
     for (const hook of eligibleHooks) {
@@ -150,7 +150,7 @@ async function main() {
         name: hook.name,
         hookKey: hook.hookKey,
       });
-      console.log(`[myclaw 自动补全] Hook 已启用：${hook.name}`);
+      console.log(`[mycodex 自动补全] Hook 已启用：${hook.name}`);
     }
 
     config = {
@@ -167,7 +167,7 @@ async function main() {
 
     await writeConfigFile(config);
   } else {
-    console.log("[myclaw 自动补全] 未发现可自动启用的 hooks。");
+    console.log("[mycodex 自动补全] 未发现可自动启用的 hooks。");
   }
 
   const initialSkillReport = buildWorkspaceSkillStatus(workspaceDir, {
@@ -186,9 +186,9 @@ async function main() {
   const skillInstallResults = [];
 
   if (installableSkills.length > 0) {
-    console.log(`[myclaw 自动补全] 正在安装 ${installableSkills.length} 个可自动安装的 skills 依赖...`);
+    console.log(`[mycodex 自动补全] 正在安装 ${installableSkills.length} 个可自动安装的 skills 依赖...`);
   } else {
-    console.log("[myclaw 自动补全] 没有需要自动安装的 skills 依赖。");
+    console.log("[mycodex 自动补全] 没有需要自动安装的 skills 依赖。");
   }
 
   for (const skill of installableSkills) {
@@ -203,11 +203,11 @@ async function main() {
         ok: false,
         message: "缺少 installId，无法自动安装",
       });
-      console.log(`[myclaw 自动补全] Skill 跳过：${skill.name}（缺少 installId）`);
+      console.log(`[mycodex 自动补全] Skill 跳过：${skill.name}（缺少 installId）`);
       continue;
     }
 
-    console.log(`[myclaw 自动补全] 安装 Skill 依赖：${skill.name} -> ${installLabel}`);
+    console.log(`[mycodex 自动补全] 安装 Skill 依赖：${skill.name} -> ${installLabel}`);
 
     try {
       const result = await installSkill({
@@ -227,9 +227,9 @@ async function main() {
       });
 
       if (result.ok) {
-        console.log(`[myclaw 自动补全] Skill 已安装：${skill.name}`);
+        console.log(`[mycodex 自动补全] Skill 已安装：${skill.name}`);
       } else {
-        console.log(`[myclaw 自动补全] Skill 安装失败：${skill.name} -> ${result.message}`);
+        console.log(`[mycodex 自动补全] Skill 安装失败：${skill.name} -> ${result.message}`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -241,7 +241,7 @@ async function main() {
         code: null,
         warnings: [],
       });
-      console.log(`[myclaw 自动补全] Skill 安装失败：${skill.name} -> ${message}`);
+      console.log(`[mycodex 自动补全] Skill 安装失败：${skill.name} -> ${message}`);
     }
   }
 
@@ -277,12 +277,12 @@ async function main() {
   const installedCount = skillInstallResults.filter((item) => item.ok).length;
   const failedCount = skillInstallResults.filter((item) => !item.ok).length;
 
-  console.log(`[myclaw 自动补全] Hooks 已启用：${enabledHooks.length} 个。`);
-  console.log(`[myclaw 自动补全] Skills 自动安装成功：${installedCount} 个，失败：${failedCount} 个，仍需人工处理：${manualSkills.length} 个。`);
+  console.log(`[mycodex 自动补全] Hooks 已启用：${enabledHooks.length} 个。`);
+  console.log(`[mycodex 自动补全] Skills 自动安装成功：${installedCount} 个，失败：${failedCount} 个，仍需人工处理：${manualSkills.length} 个。`);
 }
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[myclaw 自动补全] 执行失败：${message}`);
+  console.error(`[mycodex 自动补全] 执行失败：${message}`);
   process.exitCode = 1;
 });

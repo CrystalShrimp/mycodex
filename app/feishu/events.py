@@ -32,7 +32,7 @@ from app.profiles import discover_models, VALID_EFFORTS
 from app.state.preferences import preferences_manager
 from config.settings import settings
 
-logger = logging.getLogger("myclaw.events")
+logger = logging.getLogger("mycodex.events")
 
 
 # ===== Helpers =====
@@ -283,7 +283,7 @@ def _scan_workspace_files(workspace_str: str) -> list[dict]:
 
     ignore_dirs = {
         ".git", ".venv", "node_modules", "__pycache__",
-        ".sessions", ".claude", ".codex", ".myclaw", ".preferences", ".pytest_cache"
+        ".sessions", ".claude", ".codex", ".mycodex", ".preferences", ".pytest_cache"
     }
 
     result = []
@@ -1222,7 +1222,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         arg = parts[1].strip() if len(parts) > 1 else ""
         prompt = arg if arg else "继续上次的任务"
 
-        # Force resume-latest even if myclaw has no recorded thread: the
+        # Force resume-latest even if mycodex has no recorded thread: the
         # sentinel resolves to the workspace's newest thread at spawn time.
         if not session.codex_thread_id:
             session.codex_thread_id = "__continue__"

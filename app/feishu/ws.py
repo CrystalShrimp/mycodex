@@ -33,7 +33,7 @@ from lark_oapi.ws.enum import MessageType
 from lark_oapi.ws.model import Response
 from lark_oapi.ws.pb.pbbp2_pb2 import Frame
 
-logger = logging.getLogger("myclaw.ws")
+logger = logging.getLogger("mycodex.ws")
 
 
 def _running_loop() -> asyncio.AbstractEventLoop:

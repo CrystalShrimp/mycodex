@@ -12,10 +12,10 @@ import logging
 import subprocess
 from pathlib import Path
 
-logger = logging.getLogger("myclaw.profiles")
+logger = logging.getLogger("mycodex.profiles")
 
-MYCLAW_ROOT = Path(__file__).resolve().parent.parent  # app/profiles.py → app/ → root
-CONFIG_DIR = MYCLAW_ROOT / "config"
+MYCODEX_ROOT = Path(__file__).resolve().parent.parent  # app/profiles.py → app/ → root
+CONFIG_DIR = MYCODEX_ROOT / "config"
 
 # Fallback when models_cache.json is missing/unreadable. Keep in sync with
 # what the ChatGPT-login codex offers (visibility=list in models cache).

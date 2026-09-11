@@ -9,7 +9,7 @@ from config.settings import settings
 from app.models.schemas import ApprovalRequest, ApprovalStatus, ParsedCommand, RiskLevel
 from app.audit.logger import audit_logger
 
-logger = logging.getLogger("myclaw.approval")
+logger = logging.getLogger("mycodex.approval")
 
 
 class ApprovalManager:

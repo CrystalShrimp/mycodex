@@ -1,8 +1,8 @@
 {
-    "name":  "myclaw-feishu-setup",
+    "name":  "mycodex-feishu-setup",
     "version":  "1.0.0",
     "private":  true,
-    "description":  "One-login Feishu Open Platform delivery automation for myclaw",
+    "description":  "One-login Feishu Open Platform delivery automation for mycodex",
     "scripts":  {
                     "feishu:setup":  "tsx src/feishu-setup.ts",
                     "feishu:setup:debug":  "tsx src/feishu-setup.ts --debug",

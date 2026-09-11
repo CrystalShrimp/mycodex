@@ -6,14 +6,14 @@ import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from app.profiles import MYCLAW_ROOT
+from app.profiles import MYCODEX_ROOT
 
-logger = logging.getLogger("myclaw.preferences")
+logger = logging.getLogger("mycodex.preferences")
 
 
 @dataclass
 class UserPreferences:
-    """Myclaw runtime choices kept outside codex thread state."""
+    """Mycodex runtime choices kept outside codex thread state."""
 
     model: str = ""  # codex model slug, for example gpt-5.6-terra
     level: str = ""  # reasoning effort: low/medium/high/xhigh/max
@@ -26,7 +26,7 @@ class UserPreferences:
 
 class PreferencesManager:
     def __init__(self, state_dir: Path | None = None) -> None:
-        self._state_dir = state_dir or (MYCLAW_ROOT / ".preferences")
+        self._state_dir = state_dir or (MYCODEX_ROOT / ".preferences")
         self._state_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
@@ -65,14 +65,14 @@ class PreferencesManager:
             ws_dir = Path(workspace).resolve()
             if not ws_dir.exists() or not ws_dir.is_dir():
                 return None
-            myclaw_dir = ws_dir / ".myclaw"
-            myclaw_dir.mkdir(parents=True, exist_ok=True)
-            return myclaw_dir / "config.json"
+            mycodex_dir = ws_dir / ".mycodex"
+            mycodex_dir.mkdir(parents=True, exist_ok=True)
+            return mycodex_dir / "config.json"
         except Exception:
             return None
 
     def load_workspace_config(self, workspace: str) -> UserPreferences | None:
-        """Load workspace-level myclaw_config.json if it exists and is complete."""
+        """Load workspace-level mycodex_config.json if it exists and is complete."""
         config_path = self._workspace_config_path(workspace)
         if not config_path or not config_path.exists():
             return None
@@ -89,7 +89,7 @@ class PreferencesManager:
             return None
 
     def save_workspace_config(self, workspace: str, preferences: UserPreferences) -> None:
-        """Save complete preferences to workspace/.claude/myclaw_config.json."""
+        """Save complete preferences to workspace/.claude/mycodex_config.json."""
         if not preferences.complete:
             return
         config_path = self._workspace_config_path(workspace)

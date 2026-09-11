@@ -2,18 +2,18 @@
 setlocal enabledelayedexpansion
 
 echo ===================================================
-echo           Configuring MyClaw AutoStart...
+echo           Configuring MyCodex AutoStart...
 echo ===================================================
 echo.
 
 set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-REM 快捷方式名与同机 myclaw 原项目错开，避免互相覆盖启动项。
+REM 快捷方式名与同机 mycodex 原项目错开，避免互相覆盖启动项。
 set "NEW_LNK=%STARTUP_DIR%\MyCodex.lnk"
-set "MYCLAW_BAT=%~dp0..\MyClaw.bat"
+set "MYCODEX_BAT=%~dp0..\MyCodex.bat"
 
-if not exist "%MYCLAW_BAT%" (
-    echo [ERROR] MyClaw.bat not found in parent directory!
-    echo Please run this script from MyClaw scripts directory.
+if not exist "%MYCODEX_BAT%" (
+    echo [ERROR] MyCodex.bat not found in parent directory!
+    echo Please run this script from MyCodex scripts directory.
     echo.
     pause
     exit /b 1
@@ -24,12 +24,12 @@ if exist "%STARTUP_DIR%\OpenClaw.lnk" del /f /q "%STARTUP_DIR%\OpenClaw.lnk"
 if exist "%STARTUP_DIR%\OpenClaw.bat.lnk" del /f /q "%STARTUP_DIR%\OpenClaw.bat.lnk"
 if exist "%STARTUP_DIR%\OpenClaw-Debug.lnk" del /f /q "%STARTUP_DIR%\OpenClaw-Debug.lnk"
 
-echo [2/2] Creating new MyClaw startup shortcut...
-set "VBS_SCRIPT=%TEMP%\create_myclaw_shortcut.vbs"
+echo [2/2] Creating new MyCodex startup shortcut...
+set "VBS_SCRIPT=%TEMP%\create_mycodex_shortcut.vbs"
 
 echo Set WshShell = CreateObject("WScript.Shell") > "%VBS_SCRIPT%"
 echo Set shortcut = WshShell.CreateShortcut("%NEW_LNK%") >> "%VBS_SCRIPT%"
-echo shortcut.TargetPath = "%MYCLAW_BAT%" >> "%VBS_SCRIPT%"
+echo shortcut.TargetPath = "%MYCODEX_BAT%" >> "%VBS_SCRIPT%"
 echo shortcut.WorkingDirectory = "%~dp0.." >> "%VBS_SCRIPT%"
 echo shortcut.WindowStyle = 7 >> "%VBS_SCRIPT%"
 echo shortcut.Description = "MyCodex AutoStart Service" >> "%VBS_SCRIPT%"
@@ -40,9 +40,9 @@ if exist "%VBS_SCRIPT%" del /f /q "%VBS_SCRIPT%"
 
 echo.
 echo ===================================================
-echo [SUCCESS] MyClaw AutoStart configured successfully!
+echo [SUCCESS] MyCodex AutoStart configured successfully!
 echo ===================================================
 echo Shortcut Location : %NEW_LNK%
-echo Target Program   : %MYCLAW_BAT%
+echo Target Program   : %MYCODEX_BAT%
 echo.
 pause

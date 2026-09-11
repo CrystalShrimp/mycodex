@@ -252,7 +252,7 @@ wheels = [
 ]
 
 [[package]]
-name = "myclaw"
+name = "mycodex"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

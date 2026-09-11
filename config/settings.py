@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # Server
     host: str = "0.0.0.0"
     port: int = 8080
-    # 单实例锁端口 — 与同机其他 MyClaw 系部署（如 myclaw 原项目）必须不同，
+    # 单实例锁端口 — 与同机其他 MyCodex 系部署（如 mycodex 原项目）必须不同，
     # 否则两个服务互相误判"已在运行"而拒绝启动。
     instance_lock_port: int = 48921
 

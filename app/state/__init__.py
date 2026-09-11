@@ -1,1 +1,1 @@
-"""Persistent myclaw runtime state."""
+"""Persistent mycodex runtime state."""

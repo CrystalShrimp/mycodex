@@ -8,7 +8,7 @@ import httpx
 
 from config.settings import settings
 
-logger = logging.getLogger("myclaw.feishu")
+logger = logging.getLogger("mycodex.feishu")
 
 # Feishu API base
 API_BASE = "https://open.feishu.cn/open-apis"
