@@ -370,7 +370,7 @@ class CodexCLILoop:
                 current_tool=msg_state.get("current_tool", ""),
                 current_tool_args=msg_state.get("current_tool_args", ""),
                 last_text=last_text if status == "running" else "",
-                last_warning=msg_state.get("last_warning", "") if status != "running" else "",
+                last_warning=msg_state.get("last_warning", ""),
             )
             await feishu_client.update_card(card_id, card)
             msg_state["last_patch_at"] = now
@@ -398,9 +398,21 @@ class CodexCLILoop:
                     break
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 stderr_lines.append(decoded)
-                # codex logs non-fatal ERRORs (e.g. models refresh timeout) —
-                # keep them for diagnostics only.
                 logger.debug("codex stderr: %s", decoded)
+                # Surface stderr warnings/errors on the progress card (e.g.
+                # codex's "failed to refresh available models" timeouts).
+                # Throttled to one card PATCH per 2s for spammy streams.
+                upper = decoded.upper()
+                if "ERROR" in upper or "WARN" in upper:
+                    msg_state["warnings"] = msg_state.get("warnings", 0) + 1
+                    msg_state["last_warning"] = decoded[:160]
+                    now = asyncio.get_event_loop().time()
+                    if now - msg_state.get("last_warning_patch", 0) >= 2.0:
+                        msg_state["last_warning_patch"] = now
+                        try:
+                            await self._patch_progress(msg_state, "running")
+                        except Exception:
+                            pass
 
         stderr_task = asyncio.create_task(_drain_stderr())
 

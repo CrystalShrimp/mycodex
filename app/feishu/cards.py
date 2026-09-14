@@ -320,6 +320,16 @@ def build_progress_card(
             "text": {"tag": "lark_md", "content": "\n".join(progress_lines)},
         })
 
+        # Warning snapshot first — problems must stay visible even while a
+        # thinking snapshot exists.
+        if last_warning:
+            elements.append({"tag": "hr"})
+            warn_snap = last_warning if len(last_warning) <= 400 else (last_warning[:400] + "…")
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**⚠️ 最近警告:**\n> {warn_snap}"},
+            })
+
         # Last thinking snapshot (truncated)
         if last_text:
             snapshot = last_text if len(last_text) <= 600 else (last_text[:600] + "…")
@@ -327,13 +337,6 @@ def build_progress_card(
             elements.append({
                 "tag": "div",
                 "text": {"tag": "lark_md", "content": f"**最近思考:**\n> {snapshot}"},
-            })
-        elif last_warning:
-            elements.append({"tag": "hr"})
-            warn_snap = last_warning if len(last_warning) <= 400 else (last_warning[:400] + "…")
-            elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"**最近警告:**\n> {warn_snap}"},
             })
 
     else:  # completed / failed / cancelled
