@@ -621,6 +621,18 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                     _send_card_after_callback(open_id, reuse_card)
                 )
                 task2.add_done_callback(_log_dispatch_failure)
+            else:
+                # No reusable workspace config → preferences are now cleared.
+                # If a prompt was stashed by the first-run gate, re-enter
+                # _run_codex so the model/effort/mode setup cards go out and
+                # the task auto-starts once they're complete. Without this the
+                # flow dead-ends silently after the workspace switch.
+                if session and session.pending_prompt.strip():
+                    pending = session.pending_prompt.strip()
+                    task2 = asyncio.get_running_loop().create_task(
+                        _run_codex(pending, open_id, session)
+                    )
+                    task2.add_done_callback(_log_dispatch_failure)
             return P2CardActionTriggerResponse({})
 
         # 3. 第二阶段动作：取消并返回第一阶段卡片
