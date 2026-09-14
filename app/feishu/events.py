@@ -1497,6 +1497,36 @@ async def _run_codex(
             session.chat_id = chat_id
             session_manager.save_session(session)
 
+        # Workspace heal: a previously /cd'ed directory may have been deleted
+        # or renamed since — fall back to the default workspace (and reset the
+        # thread, which belongs to the old workspace) instead of hard-failing.
+        # Skipped when no valid default is configured (the gate below asks).
+        if not Path(session.workspace).is_dir():
+            default_ws = settings.get_default_workspace()
+            if settings.default_workspace.strip() and Path(default_ws).is_dir():
+                old_workspace = session.workspace
+                session.workspace = default_ws
+                session.workspace_selected = False
+                session.codex_thread_id = ""
+                session_manager.save_session(session)
+                await reply.text(
+                    f"⚠️ 之前的工作区 `{old_workspace}` 已不存在，"
+                    f"已自动切回默认工作区 `{session.workspace}` 并继续执行任务。"
+                )
+
+        # First-run workspace gate: DEFAULT_WORKSPACE is not configured and
+        # this user hasn't picked a workspace yet — ask via the selection
+        # card instead of silently running tasks in an arbitrary directory.
+        if not session.workspace_selected and not settings.default_workspace.strip():
+            session.pending_prompt = prompt
+            session_manager.save_session(session)
+            await reply.card(_workspace_selection_card(session))
+            await reply.text(
+                "💡 尚未设置工作区。请在上方卡片选择一个项目目录"
+                "（或发送 `/cd <绝对路径>`），选定后任务将自动开始执行。"
+            )
+            return
+
         preferences = preferences_manager.get(open_id)
         models = discover_models()
 
@@ -1599,6 +1629,14 @@ async def _run_codex(
         # Process was killed (switch/stop/new) — caller already notified user
         if agent_result.status == "cancelled":
             return
+
+        # Spawn-time failure: no thread was ever created, so the progress card
+        # (and its error display) never came into being — tell the user here
+        # instead of failing silently.
+        if agent_result.status == "failed" and not agent_result.thread_id and agent_result.error:
+            await reply.text(
+                f"❌ 任务启动失败：\n```\n{agent_result.error[:500]}\n```",
+            )
 
         # Preserve the last known-good thread on success. /new and workspace
         # changes are the explicit reset operations.

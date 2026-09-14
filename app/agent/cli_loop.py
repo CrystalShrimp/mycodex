@@ -175,6 +175,7 @@ class CodexCLILoop:
 
             workspace_path = Path(workspace)
             if not workspace_path.is_dir():
+                logger.error("Workspace not a directory, aborting: %s", workspace)
                 return self._error_result(prompt, f"工作区不存在: {workspace}")
             workspace = str(workspace_path.resolve())
 
@@ -196,9 +197,21 @@ class CodexCLILoop:
                     effective_thread, prompt,
                 )
             except FileNotFoundError as exc:
+                logger.error(
+                    "Codex CLI not found on service PATH (which=%r): %s",
+                    shutil.which(settings.codex_cli_path), exc,
+                )
                 return self._error_result(prompt, str(exc))
             except NotADirectoryError as exc:
+                logger.error("Codex spawn aborted, bad workspace: %s", exc)
                 return self._error_result(prompt, str(exc))
+            except Exception as exc:
+                # Spawn-time failures must never be silent — the user would
+                # see nothing at all (no progress card exists yet).
+                logger.exception("Codex spawn failed unexpectedly")
+                return self._error_result(
+                    prompt, f"启动 Codex 失败: {type(exc).__name__}: {exc}",
+                )
 
             self._chat_targets[open_id] = chat_id
 
