@@ -30,6 +30,7 @@ from config.settings import settings
 from app.feishu.cards import (
     build_progress_card,
     build_error_card,
+    mark_group_card,
 )
 from app.feishu.client import feishu_client
 from app.models.schemas import AgentResult, ToolCallRecord
@@ -114,6 +115,10 @@ class CodexCLILoop:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
         # open_id -> 群聊 chat_id（空 = 私聊）。崩溃告警等后续发送用它路由。
         self._chat_targets: dict[str, str] = {}
+        # 会话 key -> 真实 open_id。key 是"群=chat_id / 私聊=p_open_id"（私聊与
+        # 群聊进程/记忆完全隔离），但进度卡片、崩溃私聊告警、registry 仍要发给
+        # 真实的 open_id，查这张表还原。
+        self._owners: dict[str, str] = {}
         self._exec_locks: dict[str, asyncio.Lock] = {}
         self._reader_tasks: dict[str, asyncio.Task] = {}
         self._last_error: str = ""
@@ -140,8 +145,10 @@ class CodexCLILoop:
         return proc is not None and proc.returncode is None
 
     def get_thread_id_for_user(self, open_id: str) -> str | None:
+        # registry 里存的是真实 open_id；入参可能是会话 key，两边都试。
+        owner = self._owners.get(open_id, open_id)
         for thread_id, info in session_registry.items():
-            if info.get("open_id") == open_id:
+            if info.get("open_id") in (open_id, owner):
                 return thread_id
         return None
 
@@ -156,8 +163,13 @@ class CodexCLILoop:
         codex_thread_id: str | None = None,
         resume_thread_id: str | None = None,
         chat_id: str = "",
+        owner_open_id: str = "",
     ) -> AgentResult:
         """Spawn codex exec for one message and wait for the turn to finish.
+
+        *open_id* 在这里是“会话 key”（群=chat_id / 私聊=p_open_id），私聊与
+        群聊各起各的进程互不串台；*owner_open_id* 是真实 open_id，用于把
+        进度卡片 / 崩溃告警发到用户私聊。
 
         Thread handling:
         - *resume_thread_id* → ``codex exec resume <id>``  (explicit /resume)
@@ -214,6 +226,7 @@ class CodexCLILoop:
                 )
 
             self._chat_targets[open_id] = chat_id
+            self._owners[open_id] = owner_open_id or open_id
 
             msg_state = {
                 "card_id": "",
@@ -229,6 +242,7 @@ class CodexCLILoop:
                 "current_text": "",
                 "last_text": "",
                 "tools": [],
+                "is_group": bool(chat_id),  # 群任务进度卡标题带【群聊】标记
             }
 
             try:
@@ -236,9 +250,11 @@ class CodexCLILoop:
                     self._model_label(chosen, effort), "running",
                 )
                 if chat_id:
+                    mark_group_card(card)
+                if chat_id:
                     card_msg = await feishu_client.send_card(chat_id, card, is_chat=True)
                 else:
-                    card_msg = await feishu_client.send_card(open_id, card)
+                    card_msg = await feishu_client.send_card(self._owners[open_id], card)
                 msg_state["card_id"] = card_msg.get("data", {}).get("message_id", "")
             except Exception as e:
                 logger.warning("Failed to create progress card: %s", e)
@@ -267,6 +283,7 @@ class CodexCLILoop:
         """Kill the running process for a user (synchronous)."""
         proc = self._processes.pop(open_id, None)
         task = self._reader_tasks.pop(open_id, None)
+        self._owners.pop(open_id, None)
         if task and not task.done():
             task.cancel()
         if proc and proc.returncode is None:
@@ -372,6 +389,8 @@ class CodexCLILoop:
                 last_text=last_text if status == "running" else "",
                 last_warning=msg_state.get("last_warning", ""),
             )
+            if msg_state.get("is_group"):
+                mark_group_card(card)
             await feishu_client.update_card(card_id, card)
             msg_state["last_patch_at"] = now
             msg_state["last_status"] = status
@@ -445,7 +464,7 @@ class CodexCLILoop:
                     thread_id = event.get("thread_id", "")
                     if thread_id:
                         session_registry[thread_id] = {
-                            "open_id": open_id,
+                            "open_id": self._owners.get(open_id, open_id),
                             "approval_mode": approval_mode,
                         }
                     await self._patch_progress(msg_state, "running")
@@ -532,6 +551,8 @@ class CodexCLILoop:
                 if msg_state.get("card_id"):
                     try:
                         err_card = build_error_card("Codex CLI 已退出", reason[:3500])
+                        if msg_state.get("is_group"):
+                            mark_group_card(err_card)
                         await feishu_client.update_card(msg_state["card_id"], err_card)
                     except Exception:
                         pass
@@ -551,7 +572,9 @@ class CodexCLILoop:
                             feishu_client.send_text(crash_chat_id, text, is_chat=True),
                         )
                     else:
-                        asyncio.create_task(feishu_client.send_text(open_id, text))
+                        asyncio.create_task(
+                            feishu_client.send_text(self._owners.get(open_id, open_id), text)
+                        )
                 except Exception:
                     pass
 
@@ -639,6 +662,8 @@ class CodexCLILoop:
                     thread_id=result.thread_id,
                     task_id=result.task_id,
                 )
+                if msg_state.get("is_group"):
+                    mark_group_card(final_card)
                 asyncio.create_task(feishu_client.update_card(card_id, final_card))
             except Exception:
                 pass
@@ -658,6 +683,7 @@ class CodexCLILoop:
     def _cleanup(self, open_id: str) -> None:
         self._processes.pop(open_id, None)
         self._reader_tasks.pop(open_id, None)
+        self._owners.pop(open_id, None)
 
     @staticmethod
     def _error_result(prompt: str, error: str, status: str = "failed") -> AgentResult:

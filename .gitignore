@@ -11,20 +11,23 @@ wheels/
 
 # Environment & secrets
 .env
+.env.*
+!.env.example
 api.txt
 
-# Profile configs (contain API tokens) — track .example.json templates only
+# Legacy provider profile files (architecture removed — models now come from
+# the machine's codex login). Keep ignored defensively in case old files linger.
 config/settings_*.json
-!config/settings_*.example.json
 
 # Local/personal config (machine-specific paths, runtime state, generated)
 config/shortcuts.json
 config/claude_settings.json
 config/active_profile
 
-# Logs
+# Logs & runtime output
 *.log
-.sessions/
+logs/
+/fed_rate_*.html
 
 # Session persistence
 .sessions/
@@ -42,8 +45,9 @@ config/active_profile
 .DS_Store
 Thumbs.db
 
-# User personal notes
-doc/
+# User personal notes (report.md is customer-facing — keep trackable)
+doc/*
+!doc/report.md
 
 # Debug
 openclaw_debug/
@@ -54,20 +58,24 @@ openclaw_debug/
 scripts/feishu_bot/chrome_profile/
 scripts/feishu_bot/recording/
 scripts/feishu_bot/artifacts/
+# Deprecated feishu_bot automation leftovers (per CLAUDEME.md: only
+# MANUAL_SETUP.md and openclaw-scopes.json are still used) — internal only
+scripts/feishu_bot/recorder.py
+scripts/feishu_bot/replayer.py
+scripts/feishu_bot/diagnose_session.py
+scripts/feishu_bot/HANDOFF.md
+scripts/feishu_bot/help.md
 # Feishu setup runtime artifacts and credentials
 auto_feishu/feishu-app-result.json
 auto_feishu/artifacts/
-auto_feishu/.env
 auto_feishu/node_modules/
-auto_feishu/dist/
-auto_feishu/*.log
 prev_work/feishu-app-result.json
 prev_work/artifacts/
-prev_work/.env
 
 # Runtime preferences & test cache
 .preferences/
 .pytest_cache/
+.ruff_cache/
 
 # Local runtime workspace config & logs
 .claude/
@@ -76,5 +84,4 @@ audit.log
 
 # Subproject secrets & txt files
 auto_feishu/*.txt
-auto_feishu/key.txt
 

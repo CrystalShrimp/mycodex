@@ -36,7 +36,23 @@ class PreferencesManager:
     def get(self, open_id: str) -> UserPreferences:
         path = self._path(open_id)
         if not path.exists():
+            # 迁移：偏好 key 从裸 open_id 改为会话 key（私聊=p_open_id）后，
+            # 首次读取时把旧文件内容搬到新 key，私聊用户无需重新选一遍。
+            if open_id.startswith("p_"):
+                legacy = self._state_dir / f"{open_id[2:]}.json"
+                if legacy.exists():
+                    try:
+                        pref = self._load_file(legacy)
+                        if pref is not None:
+                            self.save(open_id, pref)
+                            return pref
+                    except Exception as exc:
+                        logger.warning("Failed to migrate preferences for %s: %s", open_id, exc)
             return UserPreferences()
+        pref = self._load_file(path)
+        return pref if pref is not None else UserPreferences()
+
+    def _load_file(self, path: Path) -> UserPreferences | None:
         try:
             data = json.loads(path.read_text("utf-8"))
             return UserPreferences(
@@ -45,8 +61,8 @@ class PreferencesManager:
                 mode=str(data.get("mode", "")),
             )
         except Exception as exc:
-            logger.warning("Failed to load preferences for %s: %s", open_id, exc)
-            return UserPreferences()
+            logger.warning("Failed to load preferences from %s: %s", path, exc)
+            return None
 
     def save(self, open_id: str, preferences: UserPreferences) -> None:
         payload = json.dumps(asdict(preferences), indent=2, ensure_ascii=False)

@@ -1,5 +1,21 @@
 from __future__ import annotations
 
+GROUP_MARK = "【群聊】"
+
+
+def mark_group_card(card: dict) -> dict:
+    """群聊来源的卡片标题加【群聊】前缀，一眼区分群任务与私聊任务。"""
+    header = card.get("header")
+    if not isinstance(header, dict):
+        return card
+    title = header.get("title")
+    if not isinstance(title, dict):
+        return card
+    content = title.get("content", "")
+    if not content.startswith(GROUP_MARK):
+        title["content"] = f"{GROUP_MARK}{content}"
+    return card
+
 
 # ===== Model Selection Card (manual selection, before execution) =====
 

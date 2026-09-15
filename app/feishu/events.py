@@ -38,6 +38,51 @@ logger = logging.getLogger("mycodex.events")
 # ===== Helpers =====
 
 
+def _skey(open_id: str, chat_id: str = "", is_group: bool = False) -> str:
+    """会话 key：群聊=chat_id，私聊=p_open_id。
+
+    私聊与群聊的 Codex 进程、持久会话记忆完全隔离，互不串台。
+    同时也是偏好(model/effort/mode)的存储 key。
+    前缀用 p_ 而不是 p: —— Windows 把 "p:xxx" 当盘符，
+    Path(dir)/"p:xxx.json" 会丢掉目录导致无法落盘。
+    """
+    return chat_id if (is_group and chat_id) else f"p_{open_id}"
+
+
+def _owner_from_skey(skey: str) -> str:
+    """从会话 key 还原真实 open_id（仅私聊 key 可逆；群聊 key 原样返回）。"""
+    return skey[2:] if skey.startswith("p_") else skey
+
+
+def _tag_card_origin(card: dict, chat_id: str, is_group: bool) -> dict:
+    """把来源聊天嵌入群聊卡片的每个 action value，并给标题加【群聊】前缀。
+
+    卡片回调（on_card_action）只回传被点击 action 的 value，因此私聊卡片
+    无需处理（默认按私聊路由），群聊卡片在这里写入 _origin_chat_id /
+    _origin_is_group，回调据此把后续卡片和状态变更留在群里。
+    """
+    if not (is_group and chat_id):
+        return card
+
+    from app.feishu.cards import mark_group_card
+    mark_group_card(card)
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            value = node.get("value")
+            if "tag" in node and isinstance(value, dict):
+                value["_origin_chat_id"] = chat_id
+                value["_origin_is_group"] = True
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(card)
+    return card
+
+
 class ReplyChannel:
     """把回复路由到消息来源：群消息回群，私聊回私。"""
 
@@ -53,8 +98,14 @@ class ReplyChannel:
 
     async def card(self, card: dict) -> dict:
         if self.is_group and self.chat_id:
+            _tag_card_origin(card, self.chat_id, True)
             return await feishu_client.send_card(self.chat_id, card, is_chat=True)
         return await feishu_client.send_card(self.open_id, card)
+
+    async def file(self, file_key: str) -> dict:
+        if self.is_group and self.chat_id:
+            return await feishu_client.send_file(self.chat_id, file_key, is_chat=True)
+        return await feishu_client.send_file(self.open_id, file_key)
 
 
 # ===== Session management =====
@@ -82,6 +133,11 @@ class SessionManager:
             try:
                 data = json.loads(f.read_text("utf-8"))
                 session = Session(**data)
+                # 旧版（裸 open_id 文件名）私聊会话迁移到 p_ 前缀，保留工作区/thread
+                if session.user_open_id.startswith("ou_"):
+                    session.user_open_id = f"p_{session.user_open_id}"
+                    self._save(session)
+                    f.unlink()
                 with self._lock:
                     self._sessions[session.session_id] = session
                     self._user_sessions[session.user_open_id] = session.session_id
@@ -122,6 +178,15 @@ class SessionManager:
         if sid:
             return self._sessions.get(sid)
         return None
+
+    def is_group_session(self, chat_id: str) -> bool:
+        """chat_id 是否对应一个已知群会话（群会话状态文件以 chat_id 命名）。"""
+        if not chat_id:
+            return False
+        with self._lock:
+            if chat_id in self._user_sessions:
+                return True
+        return self._state_file(chat_id).exists()
 
     def save_session(self, session: Session) -> None:
         """Explicitly persist session changes."""
@@ -322,15 +387,32 @@ def _scan_workspace_files(workspace_str: str) -> list[dict]:
     result.sort(key=lambda x: -x["mtime"])
     return result
 
-async def _send_card_after_callback(open_id: str, card: dict) -> None:
+async def _send_card_after_callback(reply: "ReplyChannel", card: dict) -> None:
     """Let the WebSocket callback acknowledgement flush before sending a new card."""
     await asyncio.sleep(0.2)
-    await feishu_client.send_card(open_id, card)
+    await reply.card(card)
 
 
-async def _send_text_after_callback(open_id: str, content: str) -> None:
+async def _send_text_after_callback(reply: "ReplyChannel", content: str) -> None:
     await asyncio.sleep(0.2)
-    await feishu_client.send_text(open_id, content)
+    await reply.text(content)
+
+
+def _resolve_card_chat(event, action_value: dict) -> tuple[str, bool]:
+    """解析卡片动作的来源聊天 (chat_id, is_group)。
+
+    优先读发卡时嵌入 action value 的 _origin_chat_id/_origin_is_group；
+    兜底用回调 context.open_chat_id 匹配已知群会话（老卡片没嵌来源时用）。
+    """
+    if isinstance(action_value, dict):
+        origin_chat = str(action_value.get("_origin_chat_id") or "").strip()
+        if origin_chat:
+            return origin_chat, bool(action_value.get("_origin_is_group", True))
+    ctx = getattr(event.event, "context", None)
+    open_chat_id = (getattr(ctx, "open_chat_id", "") or "").strip()
+    if open_chat_id and session_manager.is_group_session(open_chat_id):
+        return open_chat_id, True
+    return "", False
 
 
 def _info_toast(content: str) -> P2CardActionTriggerResponse:
@@ -352,11 +434,14 @@ def _log_dispatch_failure(task: asyncio.Task) -> None:
         )
 
 
-async def _check_and_run_pending(open_id: str) -> bool:
+async def _check_and_run_pending(skey: str, open_id: str = "") -> bool:
     """Check if all initial setup items (Model, Effort, Mode) are complete.
     If complete and pending_prompt exists, trigger _run_codex automatically.
+
+    skey: 会话 key（群=chat_id / 私聊=p:open_id）。open_id 仅作群聊场景下
+    审计与兜底路由的真实操作者，缺省时从 skey 还原（私聊）。
     """
-    preferences = preferences_manager.get(open_id)
+    preferences = preferences_manager.get(skey)
     models = discover_models()
 
     has_model = preferences.model in models
@@ -364,7 +449,7 @@ async def _check_and_run_pending(open_id: str) -> bool:
     has_mode = preferences.mode in ("h", "m", "l")
 
     if has_model and has_level and has_mode:
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(skey)
         if session:
             preferences_manager.save_workspace_config(session.workspace, preferences)
 
@@ -388,10 +473,11 @@ async def _check_and_run_pending(open_id: str) -> bool:
                 "",
                 f"正在全自动为您执行暂存的任务：`{prompt_preview}` ..."
             ]
-            reply = ReplyChannel(open_id, session.chat_id, bool(session.chat_id))
+            owner = open_id or _owner_from_skey(skey)
+            reply = ReplyChannel(owner, session.chat_id, bool(session.chat_id))
             await reply.text("\n".join(msg_lines))
             asyncio.get_running_loop().create_task(
-                _run_codex(pending, open_id, session, chat_id=session.chat_id)
+                _run_codex(pending, owner, session, chat_id=session.chat_id)
             )
             return True
     return False
@@ -474,13 +560,20 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
     card_type = action.value.get("type", "")
     act = action.value.get("act", "")
     open_id = operator.open_id or ""
+    # 解析卡片来源聊天：群聊卡片把状态变更留在群会话、回复也回群里；
+    # 私聊卡片维持原行为。没有来源信息的老卡片按私聊处理。
+    card_chat_id, card_is_group = _resolve_card_chat(event, action.value)
+    skey = _skey(open_id, card_chat_id, card_is_group)
+    reply = ReplyChannel(open_id, card_chat_id, card_is_group)
     logger.info(
-        "Card action: operator=%s type=%s act=%s option=%r form_keys=%s",
+        "Card action: operator=%s type=%s act=%s option=%r form_keys=%s chat=%s group=%s",
         open_id,
         card_type,
         act,
         action.option,
         sorted((action.form_value or {}).keys()),
+        card_chat_id or "(unknown)",
+        card_is_group,
     )
 
     # 拦截并处理工作区选择、确认与返回
@@ -534,7 +627,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             # 探测元数据
             meta = get_project_meta(target_path)
             # 检查是否有任务正在运行
-            warning_running = codex_cli_loop.is_running(open_id)
+            warning_running = codex_cli_loop.is_running(skey)
 
             from app.feishu.cards import build_cd_confirm_card
             confirm_card = build_cd_confirm_card(
@@ -545,7 +638,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                 warning_running=warning_running
             )
             task = asyncio.get_running_loop().create_task(
-                _send_card_after_callback(open_id, confirm_card)
+                _send_card_after_callback(reply, confirm_card)
             )
             task.add_done_callback(_log_dispatch_failure)
             return P2CardActionTriggerResponse({})
@@ -577,20 +670,27 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                     resp.toast = toast
                     return resp
 
-            session = session_manager.get_user_session(open_id)
+            session = session_manager.get_user_session(skey)
             if not session:
-                session = session_manager.create_session(open_id, "", workspace=str(p.resolve()))
+                session = session_manager.create_session(
+                    skey, card_chat_id if card_is_group else "", workspace=str(p.resolve())
+                )
             else:
                 session.workspace = str(p.resolve())
                 session.workspace_selected = True
                 session.codex_thread_id = "__continue__"  # 切换工作区后自动恢复该项目最新 Thread
+                if card_is_group and not session.chat_id:
+                    session.chat_id = card_chat_id
                 session_manager.save_session(session)
 
-            preferences_manager.clear(open_id)
+            preferences_manager.clear(skey)
             resolved_workspace = str(p.resolve())
-            _write_env_value("DEFAULT_WORKSPACE", resolved_workspace)
-            settings.default_workspace = resolved_workspace
-            codex_cli_loop.cancel_by_user(open_id)
+            # DEFAULT_WORKSPACE 是全局兜底（影响所有私聊会话的回落值）。
+            # 群聊切换工作区绝不能改写它，否则私聊窗口的工作区会被连带更改。
+            if not card_is_group:
+                _write_env_value("DEFAULT_WORKSPACE", resolved_workspace)
+                settings.default_workspace = resolved_workspace
+            codex_cli_loop.cancel_by_user(skey)
 
             pred = predict_continue_session(session.workspace)
             if pred["can_continue"]:
@@ -600,7 +700,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
 
             action_msg = "已在新目录新建并切换" if is_new else "已切换"
             task = asyncio.get_running_loop().create_task(
-                _send_text_after_callback(open_id, f"📁 {action_msg}工作区：`{session.workspace}`{pred_text}")
+                _send_text_after_callback(reply, f"📁 {action_msg}工作区：`{session.workspace}`{pred_text}")
             )
             task.add_done_callback(_log_dispatch_failure)
 
@@ -618,7 +718,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                     action_type="switch",
                 )
                 task2 = asyncio.get_running_loop().create_task(
-                    _send_card_after_callback(open_id, reuse_card)
+                    _send_card_after_callback(reply, reuse_card)
                 )
                 task2.add_done_callback(_log_dispatch_failure)
             else:
@@ -630,7 +730,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
                 if session and session.pending_prompt.strip():
                     pending = session.pending_prompt.strip()
                     task2 = asyncio.get_running_loop().create_task(
-                        _run_codex(pending, open_id, session)
+                        _run_codex(pending, open_id, session, chat_id=session.chat_id)
                     )
                     task2.add_done_callback(_log_dispatch_failure)
             return P2CardActionTriggerResponse({})
@@ -638,7 +738,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         # 3. 第二阶段动作：取消并返回第一阶段卡片
         elif act == "cancel_switch":
             task = asyncio.get_running_loop().create_task(
-                _send_card_after_callback(open_id, _workspace_selection_card())
+                _send_card_after_callback(reply, _workspace_selection_card())
             )
             task.add_done_callback(_log_dispatch_failure)
             return P2CardActionTriggerResponse({})
@@ -667,12 +767,15 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
 
         async def _upload_and_send_task() -> None:
             try:
-                await feishu_client.send_text(open_id, f"⏳ 正在上传并发送文件：`{p.name}` ...")
+                await reply.text(f"⏳ 正在上传并发送文件：`{p.name}` ...")
                 file_key = await feishu_client.upload_file(p)
-                await feishu_client.send_file(open_id, file_key)
+                await reply.file(file_key)
             except Exception as e:
                 logger.exception("Failed to send file to user %s: %s", open_id, e)
-                await feishu_client.send_text(open_id, f"❌ 发送文件失败：{e}")
+                try:
+                    await reply.text(f"❌ 发送文件失败：{e}")
+                except Exception:
+                    pass
 
         task = asyncio.get_running_loop().create_task(_upload_and_send_task())
         task.add_done_callback(_log_dispatch_failure)
@@ -688,11 +791,11 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         target_mode = action.value.get("mode", "")
         if target_mode not in ("h", "m", "l"):
             target_mode = "m"
-        preferences = preferences_manager.get(open_id)
+        preferences = preferences_manager.get(skey)
         preferences.mode = target_mode
-        preferences_manager.save(open_id, preferences)
+        preferences_manager.save(skey, preferences)
 
-        asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
+        asyncio.get_running_loop().create_task(_check_and_run_pending(skey, open_id))
 
         resp = P2CardActionTriggerResponse()
         toast = CallBackToast()
@@ -715,12 +818,12 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             resp.toast = toast
             return resp
 
-        preferences = preferences_manager.get(open_id)
+        preferences = preferences_manager.get(skey)
         preferences.model = target_model
-        preferences_manager.save(open_id, preferences)
+        preferences_manager.save(skey, preferences)
         # 每条消息独立 spawn，模型切换对下一条消息立即生效；杀掉进行中的旧模型任务
-        codex_cli_loop.cancel_by_user(open_id)
-        asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
+        codex_cli_loop.cancel_by_user(skey)
+        asyncio.get_running_loop().create_task(_check_and_run_pending(skey, open_id))
 
         toast.type = "success"
         toast.content = f"已切换模型: {models[target_model].get('label', target_model)}"
@@ -734,10 +837,10 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         toast = CallBackToast()
         if target_effort not in VALID_EFFORTS:
             target_effort = "medium"
-        preferences = preferences_manager.get(open_id)
+        preferences = preferences_manager.get(skey)
         preferences.level = target_effort
-        preferences_manager.save(open_id, preferences)
-        asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
+        preferences_manager.save(skey, preferences)
+        asyncio.get_running_loop().create_task(_check_and_run_pending(skey, open_id))
 
         toast.type = "info"
         toast.content = f"已设置推理强度: {target_effort}"
@@ -757,15 +860,17 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             resp.toast = toast
             return resp
 
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(skey)
         if not session:
-            session = session_manager.create_session(open_id, "")
+            session = session_manager.create_session(
+                skey, card_chat_id if card_is_group else ""
+            )
         session.codex_thread_id = target_sid
         session.context_tokens = 0
         session_manager.save_session(session)
         # 让下次发消息时用 resume <id> 启动；旧进程的 cancel 用任务异步等待
-        codex_cli_loop.cancel_by_user(open_id)
-        asyncio.get_running_loop().create_task(codex_cli_loop.cancel_and_wait(open_id))
+        codex_cli_loop.cancel_by_user(skey)
+        asyncio.get_running_loop().create_task(codex_cli_loop.cancel_and_wait(skey))
 
         toast.type = "success"
         toast.content = f"已切换到 Thread {target_sid}（下一条消息将 resume）"
@@ -774,7 +879,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
 
     # Reuse-last-settings card after /cd
     if card_type == "reuse_confirm":
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(skey)
         pending = session.pending_prompt.strip() if session else ""
         if session:
             session.pending_reuse_confirm = False
@@ -782,13 +887,15 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         reuse = (act == "reuse_yes")
         if not reuse:
             # User opted to re-pick: wipe preferences so next _run_codex shows setup cards.
-            preferences_manager.clear(open_id)
+            preferences_manager.clear(skey)
         toast_msg = "沿用上次设置" if reuse else "已清空，重新选择"
         # Re-trigger the queued prompt with the (preserved or cleared) prefs.
         if pending and session:
             session.pending_prompt = ""
             session_manager.save_session(session)
-            asyncio.get_running_loop().create_task(_run_codex(pending, open_id, session))
+            asyncio.get_running_loop().create_task(
+                _run_codex(pending, open_id, session, chat_id=session.chat_id)
+            )
         # Simple toast for the click.
         resp = P2CardActionTriggerResponse()
         toast_cb = CallBackToast()
@@ -799,7 +906,7 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
 
     # Workspace config reuse card handler
     if card_type == "workspace_config_reuse":
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(skey)
         workspace = session.workspace if session else settings.get_default_workspace()
         reuse = (act == "reuse_yes")
         resp = P2CardActionTriggerResponse()
@@ -808,20 +915,22 @@ def on_card_action(event: P2CardActionTrigger) -> P2CardActionTriggerResponse:
         if reuse:
             ws_config = preferences_manager.load_workspace_config(workspace)
             if ws_config and ws_config.complete:
-                preferences_manager.save(open_id, ws_config)
+                preferences_manager.save(skey, ws_config)
                 toast.type = "success"
                 toast.content = "✅ 已成功沿用工作区配置！"
                 resp.toast = toast
-                asyncio.get_running_loop().create_task(_check_and_run_pending(open_id))
+                asyncio.get_running_loop().create_task(_check_and_run_pending(skey, open_id))
                 return resp
 
         # Wiped or user chose reset
-        preferences_manager.clear(open_id)
+        preferences_manager.clear(skey)
         toast.type = "info"
         toast.content = "已重置偏好，请重新选择配置"
         resp.toast = toast
         if session:
-            asyncio.get_running_loop().create_task(_run_codex(session.pending_prompt or "", open_id, session))
+            asyncio.get_running_loop().create_task(
+                _run_codex(session.pending_prompt or "", open_id, session, chat_id=session.chat_id)
+            )
         return resp
 
 
@@ -883,7 +992,8 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     text = text.strip()
     text_lower = text.lower()
 
-    session = session_manager.get_user_session(open_id)
+    skey = _skey(open_id, chat_id, is_group)
+    session = session_manager.get_user_session(skey)
     if not codex_auth_ready():
         await reply.text(
             "⚠️ 本机尚未检测到 Codex 登录态（`~/.codex/auth.json` 不存在）。\n"
@@ -893,7 +1003,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
 
     # --- /stop: interrupt current task ---
     if text_lower in ("/stop", "停止"):
-        cancelled = await codex_cli_loop.cancel_and_wait(open_id)
+        cancelled = await codex_cli_loop.cancel_and_wait(_skey(open_id, chat_id, is_group))
         if cancelled:
             await reply.text( "已中断会话。")
         else:
@@ -902,11 +1012,11 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
 
     # --- /reset: reset all setup preferences for testing ---
     if text_lower in ("/reset", "重置"):
-        preferences = preferences_manager.get(open_id)
+        preferences = preferences_manager.get(skey)
         preferences.model = ""
         preferences.level = ""
         preferences.mode = ""
-        preferences_manager.save(open_id, preferences)
+        preferences_manager.save(skey, preferences)
         await reply.text(
             "已清空所有初始设置（Model / Effort / Mode）。",
         )
@@ -915,8 +1025,8 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     # --- /status ---
     if text_lower == "/status":
         try:
-            session = session_manager.get_user_session(open_id)
-            preferences = preferences_manager.get(open_id)
+            session = session_manager.get_user_session(skey)
+            preferences = preferences_manager.get(skey)
             if session:
                 models = discover_models()
                 # Build context usage info
@@ -965,14 +1075,14 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     if text_lower == "/model" or text_lower.startswith("/model "):
         parts = text.split(None, 1)
         models = discover_models()
-        preferences = preferences_manager.get(open_id)
+        preferences = preferences_manager.get(skey)
 
         if len(parts) == 2:
             arg = parts[1].strip()
             if arg in models:
                 preferences.model = arg
-                preferences_manager.save(open_id, preferences)
-                codex_cli_loop.cancel_by_user(open_id)
+                preferences_manager.save(skey, preferences)
+                codex_cli_loop.cancel_by_user(_skey(open_id, chat_id, is_group))
                 await reply.text(
                     f"模型已切换为 `{models[arg].get('label', arg)}`，下一条消息生效。",
                 )
@@ -997,13 +1107,13 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         or text_lower == "/effort" or text_lower.startswith("/effort ")
     ):
         parts = text.split(None, 1)
-        preferences = preferences_manager.get(open_id)
+        preferences = preferences_manager.get(skey)
 
         if len(parts) == 2:
             arg = parts[1].strip().lower()
             if arg in VALID_EFFORTS:
                 preferences.level = arg
-                preferences_manager.save(open_id, preferences)
+                preferences_manager.save(skey, preferences)
                 await reply.text( f"推理强度已切换为 `{arg}`。")
                 return
             await reply.text(
@@ -1022,16 +1132,16 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     # --- /mode [h|m|l]: choose approval mode ---
     if text_lower == "/mode" or text_lower.startswith("/mode "):
         parts = text.split(None, 1)
-        preferences = preferences_manager.get(open_id)
+        preferences = preferences_manager.get(skey)
         if len(parts) == 2 and parts[1].strip().lower() in ("h", "m", "l"):
             old_mode = preferences.mode
             new_mode = parts[1].strip().lower()
             preferences.mode = new_mode
-            preferences_manager.save(open_id, preferences)
+            preferences_manager.save(skey, preferences)
             mode_name = _mode_label(new_mode)
             # 每条消息独立 spawn，新模式对下一条消息自动生效；杀掉按旧模式跑的任务
             if old_mode != new_mode:
-                await codex_cli_loop.cancel_and_wait(open_id)
+                await codex_cli_loop.cancel_and_wait(_skey(open_id, chat_id, is_group))
                 await reply.text(
                     f"审批模式已切换为 {mode_name} (`{new_mode}`)，下一条消息生效。",
                 )
@@ -1039,7 +1149,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
                 await reply.text(
                     f"审批模式仍为 {mode_name} (`{new_mode}`)。",
                 )
-            await _check_and_run_pending(open_id)
+            await _check_and_run_pending(skey, open_id)
             return
 
         from app.feishu.cards import build_mode_selection_card
@@ -1051,7 +1161,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         return
     # --- /pwd: print current workspace path ---
     if text_lower == "/pwd" or text_lower.startswith("/pwd "):
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         ws = session.workspace if session else settings.get_default_workspace()
         await reply.text( f"📁 当前工作目录：`{ws}`")
         return
@@ -1059,7 +1169,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
 
     # --- /file: select and send workspace files ---
     if text_lower == "/file" or text_lower.startswith("/file "):
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         ws = session.workspace if session else settings.get_default_workspace()
         files = _scan_workspace_files(ws)
         from app.feishu.cards import build_file_selection_card
@@ -1073,7 +1183,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
 
         # 1. 如果不带参数，展示卡片选择已有项目或新建
         if len(parts) < 2 or not parts[1].strip():
-            session = session_manager.get_user_session(open_id)
+            session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
             card = _workspace_selection_card(session)
             await reply.card( card)
             return
@@ -1097,7 +1207,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             # 目录不存在但父目录存在 — 弹出前置确认卡片，待用户确认后再建目录切换
             target_path = str(p.resolve())
             meta = get_project_meta(target_path)
-            warning_running = codex_cli_loop.is_running(open_id)
+            warning_running = codex_cli_loop.is_running(skey)
 
             from app.feishu.cards import build_cd_confirm_card
             confirm_card = build_cd_confirm_card(
@@ -1110,9 +1220,9 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             await reply.card( confirm_card)
             return
 
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(skey)
         if not session:
-            session = session_manager.create_session(open_id, chat_id, workspace=str(p.resolve()))
+            session = session_manager.create_session(skey, chat_id, workspace=str(p.resolve()))
         else:
             session.workspace = str(p.resolve())
             session.workspace_selected = True
@@ -1120,9 +1230,12 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             session_manager.save_session(session)
 
         resolved_workspace = str(p.resolve())
-        _write_env_value("DEFAULT_WORKSPACE", resolved_workspace)
-        settings.default_workspace = resolved_workspace
-        codex_cli_loop.cancel_by_user(open_id)
+        # 全局 DEFAULT_WORKSPACE 只由私聊 /cd 改写；群聊切换只影响群会话，
+        # 否则私聊窗口的工作区会被群操作连带更改。
+        if not is_group:
+            _write_env_value("DEFAULT_WORKSPACE", resolved_workspace)
+            settings.default_workspace = resolved_workspace
+        codex_cli_loop.cancel_by_user(skey)
 
         pred = predict_continue_session(session.workspace)
         if pred["can_continue"]:
@@ -1147,21 +1260,21 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             )
             await reply.card( reuse_card)
         else:
-            preferences_manager.clear(open_id)
+            preferences_manager.clear(skey)
         return
 
     # --- /session [thread_id]: list threads in current workspace and resume one ---
     if text_lower == "/session" or text_lower.startswith("/session "):
         parts = text.split(None, 1)
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         if not session:
-            session = session_manager.create_session(open_id, chat_id)
+            session = session_manager.create_session(_skey(open_id, chat_id, is_group), chat_id)
         ws = session.workspace or settings.get_default_workspace()
 
         # /session <id>: 直接走 /resume 同款路径
         if len(parts) == 2 and parts[1].strip():
             target_id = parts[1].strip()
-            await codex_cli_loop.cancel_and_wait(open_id)
+            await codex_cli_loop.cancel_and_wait(_skey(open_id, chat_id, is_group))
             session.codex_thread_id = target_id
             session.context_tokens = 0
             session_manager.save_session(session)
@@ -1184,7 +1297,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     # --- /resume <thread_id>: switch to one exact native thread ---
     if text_lower.startswith("/resume"):
         parts = text.split(None, 1)
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         if len(parts) < 2 or not parts[1].strip():
             cur = session.codex_thread_id if session else ""
             await reply.text(
@@ -1192,13 +1305,13 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             )
             return
         if not session:
-            session = session_manager.create_session(open_id, chat_id)
-        await codex_cli_loop.cancel_and_wait(open_id)
+            session = session_manager.create_session(_skey(open_id, chat_id, is_group), chat_id)
+        await codex_cli_loop.cancel_and_wait(_skey(open_id, chat_id, is_group))
         session.codex_thread_id = parts[1].strip()
         session.context_tokens = 0
         session_manager.save_session(session)
         ws_config = preferences_manager.load_workspace_config(session.workspace)
-        cur_pref = preferences_manager.get(open_id)
+        cur_pref = preferences_manager.get(skey)
         target_config = ws_config if (ws_config and ws_config.complete) else (cur_pref if cur_pref.complete else None)
 
         if target_config:
@@ -1218,7 +1331,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             )
             await reply.card( reuse_card)
         else:
-            preferences_manager.clear(open_id)
+            preferences_manager.clear(skey)
             await reply.text(
                 f"🔑 已切换到 Codex Thread `{session.codex_thread_id}`。\n"
                 "运行参数已清空，请依次设置 `/model`、`/level`、`/mode`。",
@@ -1227,9 +1340,9 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     # --- /continue [prompt]: resume most recent thread in workspace ---
     if text_lower.startswith("/continue"):
         parts = text.split(None, 1)
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         if not session:
-            session = session_manager.create_session(open_id, chat_id)
+            session = session_manager.create_session(_skey(open_id, chat_id, is_group), chat_id)
 
         arg = parts[1].strip() if len(parts) > 1 else ""
         prompt = arg if arg else "继续上次的任务"
@@ -1244,8 +1357,8 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
 
     # --- /new: reset native thread and runtime preferences ---
     if text_lower == "/new":
-        await codex_cli_loop.cancel_and_wait(open_id)
-        session = session_manager.reset_user_session(open_id)
+        await codex_cli_loop.cancel_and_wait(_skey(open_id, chat_id, is_group))
+        session = session_manager.reset_user_session(_skey(open_id, chat_id, is_group))
 
         ws_config = preferences_manager.load_workspace_config(session.workspace)
         if ws_config and ws_config.complete:
@@ -1267,7 +1380,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             )
             await reply.card( reuse_card)
         else:
-            preferences_manager.clear(open_id)
+            preferences_manager.clear(skey)
             await reply.text(
                 f"✨ 新会话已重置。\n"
                 f"📁 工作区: `{session.workspace}`\n"
@@ -1277,9 +1390,9 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
         return
     # --- /clean: remove old session files, keep only current ---
     if text_lower == "/clean":
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         if session:
-            session_manager.clean_old_sessions(open_id)
+            session_manager.clean_old_sessions(_skey(open_id, chat_id, is_group))
             await reply.text(
                 f"已清理旧会话文件，当前会话: `{session.session_id}`",
             )
@@ -1301,7 +1414,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
     # `/mem clear`     → wipe
     if text_lower == "/mem" or text_lower.startswith("/mem "):
         arg = text[4:].strip()  # text after "/mem"
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         workspace = session.workspace if session else settings.get_default_workspace()
         memory_md = Path(workspace) / "AGENTS.md"
 
@@ -1385,7 +1498,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             )
             return
 
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         workspace = session.workspace if session else settings.get_default_workspace()
         notes_md = Path(workspace) / "notes.md"
 
@@ -1394,7 +1507,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
 
         # 1. Check if 'last'
         if clean_arg.lower() == "last":
-            last_res = codex_cli_loop.get_last_result(open_id)
+            last_res = codex_cli_loop.get_last_result(_skey(open_id, chat_id, is_group))
             if not last_res or not last_res.text:
                 await reply.text( "⚠️ 未找到上一次执行完成的结果记录。",
                 )
@@ -1403,7 +1516,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             source_desc = f"上一次任务 (`{last_res.task_id}`)"
         else:
             # 2. Check if clean_arg matches a recorded task_id
-            task_res = codex_cli_loop.get_task_result(open_id, clean_arg)
+            task_res = codex_cli_loop.get_task_result(_skey(open_id, chat_id, is_group), clean_arg)
             if task_res and task_res.text:
                 content_to_write = task_res.text
                 source_desc = f"任务 (`{task_res.task_id}`)"
@@ -1448,7 +1561,7 @@ async def _dispatch(open_id: str, chat_id: str, message_id: str, text: str, is_g
             await reply.text( "用法: `/sh <command>`，例如 `/sh mkdir ZhiWang`",
             )
             return
-        session = session_manager.get_user_session(open_id)
+        session = session_manager.get_user_session(_skey(open_id, chat_id, is_group))
         workspace = session.workspace if session else settings.get_default_workspace()
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -1497,12 +1610,13 @@ async def _run_codex(
     codex_thread_id on the session drives thread continuity.
     """
     audit_logger.log_command_received(open_id, prompt, "started")
+    skey = _skey(open_id, chat_id, bool(chat_id))
     reply = ReplyChannel(open_id, chat_id, bool(chat_id))
     try:
         if not session:
-            session = session_manager.get_user_session(open_id)
+            session = session_manager.get_user_session(skey)
         if not session:
-            session = session_manager.create_session(open_id, chat_id)
+            session = session_manager.create_session(skey, chat_id)
         elif chat_id and session.chat_id != chat_id:
             # 旧 session 可能带空 chat_id（修复前创建），群消息到达时刷新，
             # 保证后续配置卡片/进度卡片回到群里而不是发进无效私聊
@@ -1539,7 +1653,7 @@ async def _run_codex(
             )
             return
 
-        preferences = preferences_manager.get(open_id)
+        preferences = preferences_manager.get(skey)
         models = discover_models()
 
         # After a recent /cd into a new workspace, ask whether to reuse last
@@ -1607,7 +1721,7 @@ async def _run_codex(
 
         agent_result = await codex_cli_loop.send_and_wait(
             prompt=prompt,
-            open_id=open_id,
+            open_id=skey,
             workspace=session.workspace,
             model=preferences.model,
             effort=preferences.level,
@@ -1615,6 +1729,7 @@ async def _run_codex(
             codex_thread_id=session.codex_thread_id or None,
             resume_thread_id=resume_thread_id,
             chat_id=chat_id,
+            owner_open_id=open_id,
         )
         # Auto-heal: if the run failed because the recorded thread id no
         # longer exists on disk, fall back to a fresh thread and retry once.

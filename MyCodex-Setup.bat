@@ -1,16 +1,15 @@
 @echo off
 setlocal
-chcp 65001 >nul
 cd /d "%~dp0"
 
 echo ===================================================
-echo           MyCodex ä¸€é”®è‡ªæ£€å’Œè‡ªåŠ¨å®‰è£…å‘å¯¼
+echo           MyCodex Ò»¼ü×Ô¼ìºÍ×Ô¶¯°²×°Ïòµ¼
 echo ===================================================
 echo.
 
 set NEED_RESTART_CMD=0
 
-REM ================= 1. Node.js 20+ ç‰ˆæœ¬æ£€æŸ¥ =================
+REM ================= 1. Node.js 20+ °æ±¾¼ì²é =================
 set NODE_OK=0
 where node >nul 2>&1
 if errorlevel 1 goto CHECK_NODE_DONE
@@ -21,48 +20,55 @@ if %NODE_MAJOR% geq 20 set NODE_OK=1
 
 :CHECK_NODE_DONE
 if "%NODE_OK%"=="1" (
-    echo [OK] Node.js 20+ çŽ¯å¢ƒè‡ªæ£€é€šè¿‡ï¼
+    echo [OK] Node.js 20+ »·¾³×Ô¼ìÍ¨¹ý£¡
     goto CHECK_VENV
 )
 
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° Node.js 20+ çŽ¯å¢ƒ (auto_feishu éœ€è¦ Node.js v20 æˆ–æ›´é«˜ç‰ˆæœ¬)ã€‚
-set /p CHOICE_NODE="[?] æ˜¯å¦è‡ªåŠ¨ä¸‹è½½å¹¶é»˜è®¤å®‰è£… Node.js v20.18.0 LTSï¼Ÿ [Y/N]: "
+echo [!] ¾¯¸æ: Î´¼ì²âµ½ Node.js 20+ »·¾³ (auto_feishu ÐèÒª Node.js v20 »ò¸ü¸ß°æ±¾)¡£
+set /p CHOICE_NODE="[?] ÊÇ·ñ×Ô¶¯ÏÂÔØ²¢Ä¬ÈÏ°²×° Node.js v20.18.0 LTS£¿ [Y/N]: "
 if /i not "%CHOICE_NODE%"=="Y" if /i not "%CHOICE_NODE%"=="" (
-    echo [-] å·²è·³è¿‡ Node.js å®‰è£…ã€‚
+    echo [-] ÒÑÌø¹ý Node.js °²×°¡£
     goto CHECK_VENV
 )
 
-echo [!] æ­£åœ¨é€šè¿‡å›½å†…é•œåƒä¸‹è½½ Node.js 20.18.0 å®˜æ–¹å®‰è£…åŒ…...
+echo [!] ÕýÔÚÍ¨¹ý¹úÄÚ¾µÏñÏÂÔØ Node.js 20.18.0 ¹Ù·½°²×°°ü...
 set "MSI_PATH=%TEMP%\node_v20.msi"
 curl.exe -L -o "%MSI_PATH%" "https://npmmirror.com/mirrors/node/v20.18.0/node-v20.18.0-x64.msi"
 if exist "%MSI_PATH%" (
-    echo [!] æ­£åœ¨é™é»˜é»˜è®¤å®‰è£… Node.js...
+    echo [!] ÕýÔÚ¾²Ä¬Ä¬ÈÏ°²×° Node.js...
     msiexec.exe /i "%MSI_PATH%" /quiet /norestart
+    if errorlevel 1 (
+        del /f /q "%MSI_PATH%" >nul 2>&1
+        echo [X] Node.js ¾²Ä¬°²×°Ê§°Ü£¨Í¨³£ÊÇÒòÎªÃ»ÓÐ¹ÜÀíÔ±È¨ÏÞ£©¡£
+        echo     ÇëÒÔ¹ÜÀíÔ±Éí·ÝÖØ¿ª cmd ÔÙÔËÐÐ±¾½Å±¾£¬»òÊÖ¶¯°²×° Node.js 20+ ºóÖØÅÜ¡£
+        set NEED_RESTART_CMD=1
+        goto CHECK_VENV
+    )
     del /f /q "%MSI_PATH%" >nul 2>&1
     set NEED_RESTART_CMD=1
     set "PATH=%ProgramFiles%\nodejs;%PATH%"
-    echo [OK] Node.js 20.18.0 å·²é™é»˜å®‰è£…ï¼
+    echo [OK] Node.js 20.18.0 ÒÑ¾²Ä¬°²×°£¡
 )
 
 :CHECK_VENV
 echo.
-REM ================= 2. Python .venv çŽ¯å¢ƒæ£€æŸ¥ =================
+REM ================= 2. Python .venv »·¾³¼ì²é =================
 if exist ".venv\Scripts\python.exe" (
-    echo [OK] Python çŽ¯å¢ƒè‡ªæ£€é€šè¿‡: .venv\Scripts\python.exe
+    echo [OK] Python »·¾³×Ô¼ìÍ¨¹ý: .venv\Scripts\python.exe
     goto CHECK_FEISHU
 )
 
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° Python è™šæ‹ŸçŽ¯å¢ƒ (.venv)ã€‚
-set /p CHOICE_VENV="[?] æ˜¯å¦è‡ªåŠ¨å®‰è£… uv å¹¶åˆ›å»º Python .venv çŽ¯å¢ƒï¼Ÿ [Y/N]: "
+echo [!] ¾¯¸æ: Î´¼ì²âµ½ Python ÐéÄâ»·¾³ (.venv)¡£
+set /p CHOICE_VENV="[?] ÊÇ·ñ×Ô¶¯°²×° uv ²¢´´½¨ Python .venv »·¾³£¿ [Y/N]: "
 if /i not "%CHOICE_VENV%"=="Y" if /i not "%CHOICE_VENV%"=="" (
-    echo [-] å·²è·³è¿‡ Python .venv å®‰è£…ã€‚
+    echo [-] ÒÑÌø¹ý Python .venv °²×°¡£
     goto CHECK_FEISHU
 )
 
 where uv >nul 2>&1
 if not errorlevel 1 goto UV_READY
 
-echo [!] æ­£åœ¨è‡ªåŠ¨ä½¿ç”¨ curl ä¸‹è½½å¹¶å®‰è£… uv å·¥å…·...
+echo [!] ÕýÔÚ×Ô¶¯Ê¹ÓÃ curl ÏÂÔØ²¢°²×° uv ¹¤¾ß...
 set "UV_INSTALLER=%TEMP%\uv_install.ps1"
 curl.exe -L -o "%UV_INSTALLER%" "https://astral.sh/uv/install.ps1"
 if exist "%UV_INSTALLER%" (
@@ -72,52 +78,62 @@ if exist "%UV_INSTALLER%" (
 set "PATH=%USERPROFILE%\.cargo\bin;%USERPROFILE%\.local\bin;%PATH%"
 
 :UV_READY
-echo [!] æ­£åœ¨æ‰§è¡Œ uv sync å®‰è£…é¡¹ç›®ä¾èµ–...
-REM å®¢æˆ·æœºå™¨å¯èƒ½å…¨å±€é…ç½®è¿‡ UV_PROJECT_ENVIRONMENTï¼Œå¯¼è‡´ uv ç¼“å­˜åŒæ­¥åˆ°åˆ«å¤„ã€‚
-REM å¼ºåˆ¶ .venv é‡æ–°ç”Ÿæˆï¼ˆå¿½ç•¥ Resolved/Checked å·®å¼‚ä½† .venv ç¼ºå¤±çš„åœºæ™¯ï¼‰ï¼Œä»¥é€‚é…æœ¬æœºé¡¹ç›®ã€‚
+echo [!] ÕýÔÚÖ´ÐÐ uv sync °²×°ÏîÄ¿ÒÀÀµ...
+REM ¿Í»§»úÆ÷¿ÉÄÜÈ«¾ÖÅäÖÃ¹ý UV_PROJECT_ENVIRONMENT£¬µ¼ÖÂ uv »º´æÍ¬²½µ½±ð´¦¡£
+REM Ç¿ÖÆ .venv ÖØÐÂÉú³É£¨ºöÂÔ Resolved/Checked ²îÒìµ« .venv È±Ê§µÄ³¡¾°£©£¬ÒÔÊÊÅä±¾»úÏîÄ¿¡£
 set "UV_PROJECT_ENVIRONMENT=%~dp0.venv"
 call uv sync
 set "UV_PROJECT_ENVIRONMENT="
 if not exist ".venv\Scripts\python.exe" (
-    echo [X] .venv åˆ›å»ºå¤±è´¥ã€‚è¯·æ‰‹åŠ¨å®‰è£… Python å’Œ uv åŽé‡è¯•ã€‚
+    echo [X] .venv ´´½¨Ê§°Ü¡£ÇëÊÖ¶¯°²×° Python ºÍ uv ºóÖØÊÔ¡£
     pause
     exit /b 1
 )
-echo [OK] Python è™šæ‹ŸçŽ¯å¢ƒ (.venv) åˆ›å»ºæˆåŠŸï¼
+echo [OK] Python ÐéÄâ»·¾³ (.venv) ´´½¨³É¹¦£¡
 
 :CHECK_FEISHU
 echo.
-REM ================= 3. auto_feishu npm å’Œ Playwright æ£€æŸ¥ =================
+REM ================= 3. auto_feishu npm ºÍ Playwright ¼ì²é =================
 if not exist "auto_feishu\package.json" goto CHECK_ENV
 if exist "auto_feishu\node_modules" (
-    echo [OK] auto_feishu node_modules çŽ¯å¢ƒè‡ªæ£€é€šè¿‡ï¼
+    echo [OK] auto_feishu node_modules »·¾³×Ô¼ìÍ¨¹ý£¡
     goto CHECK_ENV
 )
 
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° auto_feishu çš„ Node.js ä¾èµ–åŒ… (node_modules)ã€‚
-set /p CHOICE_NPM="[?] æ˜¯å¦è‡ªåŠ¨å®‰è£… auto_feishu ä¾èµ–å¹¶ä¸‹è½½ Playwright æµè§ˆå™¨ï¼Ÿ [Y/N]: "
+echo [!] ¾¯¸æ: Î´¼ì²âµ½ auto_feishu µÄ Node.js ÒÀÀµ°ü (node_modules)¡£
+set /p CHOICE_NPM="[?] ÊÇ·ñ×Ô¶¯°²×° auto_feishu ÒÀÀµ²¢ÏÂÔØ Playwright ä¯ÀÀÆ÷£¿ [Y/N]: "
 if /i not "%CHOICE_NPM%"=="Y" if /i not "%CHOICE_NPM%"=="" (
-    echo [-] å·²è·³è¿‡ auto_feishu npm ä¾èµ–å®‰è£…ã€‚
+    echo [-] ÒÑÌø¹ý auto_feishu npm ÒÀÀµ°²×°¡£
     goto CHECK_ENV
 )
 
 pushd auto_feishu
-echo [!] æ­£åœ¨æ‰§è¡Œ npm install ...
+echo [!] ÕýÔÚÖ´ÐÐ npm install ...
 call npm install
-echo [!] æ­£åœ¨å®‰è£… Playwright Chromium å†…æ ¸ï¼ˆç¨åŽï¼‰...
+if errorlevel 1 (
+    echo [X] npm install Ê§°Ü£¬Çë¼ì²éÍøÂçºóÖØÅÜ±¾½Å±¾¡£
+    popd
+    goto CHECK_ENV
+)
+echo [!] ÕýÔÚ°²×° Playwright Chromium ÄÚºË£¨ÉÔºó£©...
 call npx playwright install chromium
+if errorlevel 1 (
+    echo [X] Playwright Chromium °²×°Ê§°Ü£¬Çë¼ì²éÍøÂçºóÖØÅÜ±¾½Å±¾¡£
+    popd
+    goto CHECK_ENV
+)
 popd
-echo [OK] auto_feishu ä¾èµ–å’Œ Playwright æµè§ˆå™¨å®‰è£…å®Œæˆï¼
+echo [OK] auto_feishu ÒÀÀµºÍ Playwright ä¯ÀÀÆ÷°²×°Íê³É£¡
 
 :CHECK_ENV
 echo.
-REM ================= 4. .env é…ç½®æ–‡ä»¶æ£€æŸ¥ =================
+REM ================= 4. .env ÅäÖÃÎÄ¼þ¼ì²é =================
 if exist ".env" (
-    echo [OK] é…ç½®æ–‡ä»¶ .env è‡ªæ£€é€šè¿‡ï¼
+    echo [OK] ÅäÖÃÎÄ¼þ .env ×Ô¼ìÍ¨¹ý£¡
     goto CHECK_CODEX
 )
 
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ°é…ç½®æ–‡ä»¶ .envï¼Œæ­£åœ¨åˆ›å»ºæœ€å°æ¨¡æ¿...
+echo [!] ¾¯¸æ: Î´¼ì²âµ½ÅäÖÃÎÄ¼þ .env£¬ÕýÔÚ´´½¨×îÐ¡Ä£°å...
 (
     echo # ===== Feishu App Config =====
     echo FEISHU_APP_ID=
@@ -126,7 +142,7 @@ echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ°é…ç½®æ–‡ä»¶ .envï¼Œæ­£åœ¨åˆ›å»ºæœ€å°æ¨¡æ¿...
     echo FEISHU_ENCRYPT_KEY=
     echo.
     echo # ===== Agent Config =====
-    echo # Codex è®¤è¯ä½¿ç”¨æœ¬æœº ChatGPT ç™»å½•æ€ï¼ˆ~/.codex/auth.jsonï¼‰ï¼Œæ— éœ€ API Keyã€‚
+    echo # Codex auth uses the local ChatGPT login (~/.codex/auth.json), no API key needed.
     echo DEFAULT_WORKSPACE=%~dp0.
     echo APPROVAL_TIMEOUT=600
     echo.
@@ -138,65 +154,65 @@ echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ°é…ç½®æ–‡ä»¶ .envï¼Œæ­£åœ¨åˆ›å»ºæœ€å°æ¨¡æ¿...
     echo PORT=8090
     echo INSTANCE_LOCK_PORT=48922
 ) > ".env"
-echo [OK] å·²ç”Ÿæˆ .env æ¨¡æ¿ï¼Œè¯·ç¨åŽç¼–è¾‘å¡«å…¥é£žä¹¦å‡­æ® (FEISHU_APP_ID / FEISHU_APP_SECRET)ã€‚
+echo [OK] ÒÑÉú³É .env Ä£°å£¬ÇëÉÔºó±à¼­ÌîÈë·ÉÊéÆ¾¾Ý (FEISHU_APP_ID / FEISHU_APP_SECRET)¡£
 
-REM ================= 5. Codex CLI ä¸Žç™»å½•æ€æ£€æŸ¥ =================
+REM ================= 5. Codex CLI ÓëµÇÂ¼Ì¬¼ì²é =================
 :CHECK_CODEX
 echo.
 where codex >nul 2>&1
 if errorlevel 1 goto CODEX_ASK
 call codex --version >nul 2>&1
 if errorlevel 1 goto CODEX_ASK
-echo [OK] Codex CLI è‡ªæ£€é€šè¿‡ï¼
+echo [OK] Codex CLI ×Ô¼ìÍ¨¹ý£¡
 goto CODEX_LOGIN
 
 :CODEX_ASK
-echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° Codex CLI (mycodex çš„ä»»åŠ¡æ‰§è¡Œå¼•æ“Ž)ã€‚
-set /p CHOICE_CODEX="[?] æ˜¯å¦è‡ªåŠ¨å®‰è£… OpenAI Codex CLI (npm å…¨å±€å®‰è£…ï¼Œå›½å†…é•œåƒ)ï¼Ÿ [Y/N]: "
+echo [!] ¾¯¸æ: Î´¼ì²âµ½ Codex CLI (mycodex µÄÈÎÎñÖ´ÐÐÒýÇæ)¡£
+set /p CHOICE_CODEX="[?] ÊÇ·ñ×Ô¶¯°²×° OpenAI Codex CLI (npm È«¾Ö°²×°£¬¹úÄÚ¾µÏñ)£¿ [Y/N]: "
 if /i not "%CHOICE_CODEX%"=="Y" if /i not "%CHOICE_CODEX%"=="" goto CODEX_SKIP
-echo [!] æ­£åœ¨é€šè¿‡ npmmirror å®‰è£… @openai/codex ...
+echo [!] ÕýÔÚÍ¨¹ý npmmirror °²×° @openai/codex ...
 call npm install -g @openai/codex --registry=https://registry.npmmirror.com
 if errorlevel 1 (
-    echo [ERROR] Codex CLI å®‰è£…å¤±è´¥ã€‚è¯·æ‰‹åŠ¨æ‰§è¡Œ: npm install -g @openai/codex
+    echo [ERROR] Codex CLI °²×°Ê§°Ü¡£ÇëÊÖ¶¯Ö´ÐÐ: npm install -g @openai/codex
     pause
     exit /b 1
 )
 where codex >nul 2>&1
 if errorlevel 1 (
-    echo [æ³¨æ„] å®‰è£…å®Œæˆä½†å½“å‰çª—å£è¿˜æ‰¾ä¸åˆ° codex å‘½ä»¤ï¼Œé‡å¼€ cmd åŽå¯è¢«è„šæœ¬è‡ªæ£€ã€‚
+    echo [×¢Òâ] °²×°Íê³Éµ«µ±Ç°´°¿Ú»¹ÕÒ²»µ½ codex ÃüÁî£¬ÖØ¿ª cmd ºó¿É±»½Å±¾×Ô¼ì¡£
 ) else (
-    echo [OK] Codex CLI å®‰è£…å®Œæˆï¼
+    echo [OK] Codex CLI °²×°Íê³É£¡
 )
 
 :CODEX_LOGIN
 codex login status 2>&1 | find /i "Logged in" >nul
 if not errorlevel 1 (
-    echo [OK] Codex ç™»å½•æ€è‡ªæ£€é€šè¿‡ï¼ˆChatGPT è´¦å·å·²ç™»å½•ï¼‰ï¼
+    echo [OK] Codex µÇÂ¼Ì¬×Ô¼ìÍ¨¹ý£¨ChatGPT ÕËºÅÒÑµÇÂ¼£©£¡
     goto FINISH
 )
-echo [!] è­¦å‘Š: Codex æœªç™»å½•ã€‚MyCodex ä¾èµ–æœ¬æœºå·²ç™»å½•çš„ ChatGPT è´¦å·æ‰§è¡Œä»»åŠ¡ã€‚
-echo     è¯·æ‰‹åŠ¨åœ¨ç»ˆç«¯æ‰§è¡Œ: codex login
-echo     å®Œæˆæµè§ˆå™¨æŽˆæƒåŽå†å¯åŠ¨ MyCodexã€‚
+echo [!] ¾¯¸æ: Codex Î´µÇÂ¼¡£MyCodex ÒÀÀµ±¾»úÒÑµÇÂ¼µÄ ChatGPT ÕËºÅÖ´ÐÐÈÎÎñ¡£
+echo     ÇëÊÖ¶¯ÔÚÖÕ¶ËÖ´ÐÐ: codex login
+echo     Íê³Éä¯ÀÀÆ÷ÊÚÈ¨ºóÔÙÆô¶¯ MyCodex¡£
 
 :CODEX_SKIP
 
 :FINISH
 echo.
 echo ===================================================
-echo              ä¸€é”®è‡ªæ£€å®‰è£…å®Œæˆï¼
+echo              Ò»¼ü×Ô¼ì°²×°Íê³É£¡
 if "%NEED_RESTART_CMD%"=="1" (
-    echo [æ³¨æ„] å·²å®‰è£…å…¨å±€ç³»ç»Ÿçº§è½¯ä»¶ï¼Œè¯·é‡å¼€ cmd çª—å£è®©çŽ¯å¢ƒå˜é‡å®Œå…¨ç”Ÿæ•ˆã€‚
+    echo [×¢Òâ] ÒÑ°²×°È«¾ÖÏµÍ³¼¶Èí¼þ£¬ÇëÖØ¿ª cmd ´°¿ÚÈÃ»·¾³±äÁ¿ÍêÈ«ÉúÐ§¡£
 )
 echo.
-echo æŽ¥ä¸‹æ¥è¯·:
-echo   1. åŒå‡» auto_feishu\setup.cmd ä¸€é”®é…ç½®é£žä¹¦æœºå™¨äºº (è‡ªåŠ¨å†™å…¥ .env å‡­æ®)
-echo   2. ç¡®è®¤ç»ˆç«¯æ‰§è¡Œ codex login å·²å®Œæˆ ChatGPT ç™»å½•
-echo   3. åŒå‡» MyCodex.bat å¯åŠ¨æœåŠ¡
-echo   4. åœ¨ .env çš„ ALLOWED_USERS ä¸­åŠ å…¥ä½¿ç”¨è€…é£žä¹¦ Open ID (ç•™ç©º=ä¸é™åˆ¶)
+echo ½ÓÏÂÀ´Çë:
+echo   1. Ë«»÷ auto_feishu\setup.cmd Ò»¼üÅäÖÃ·ÉÊé»úÆ÷ÈË (×Ô¶¯Ð´Èë .env Æ¾¾Ý)
+echo   2. È·ÈÏÖÕ¶ËÖ´ÐÐ codex login ÒÑÍê³É ChatGPT µÇÂ¼
+echo   3. Ë«»÷ MyCodex.bat Æô¶¯·þÎñ
+echo   4. ÔÚ .env µÄ ALLOWED_USERS ÖÐ¼ÓÈëÊ¹ÓÃÕß·ÉÊé Open ID (Áô¿Õ=²»ÏÞÖÆ)
 
 if not exist "scripts\setup_autostart.bat" goto END_ALL
 echo.
-set /p CHOICE_AUTO="[?] æ˜¯å¦è®¾ç½®æ¯æ¬¡å¼€æœºè‡ªåŠ¨åŽå°è¿è¡Œï¼ˆæ‰˜ç›˜å¸¸é©»ï¼ŒåŽç»­å¯ MyCodex è‡ªç®¡ç†ï¼‰ï¼Ÿ [Y/N]: "
+set /p CHOICE_AUTO="[?] ÊÇ·ñÉèÖÃÃ¿´Î¿ª»ú×Ô¶¯ºóÌ¨ÔËÐÐ£¨ÍÐÅÌ³£×¤£¬ºóÐø¿É MyCodex ×Ô¹ÜÀí£©£¿ [Y/N]: "
 if /i "%CHOICE_AUTO%"=="Y" call "scripts\setup_autostart.bat"
 
 :END_ALL

@@ -3,25 +3,25 @@ setlocal
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] н╢О©╫р╣О©╫ .venv\Scripts\python.exe
-    echo О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ MyCodex-Setup.bat О©╫О©╫в╟О©╫О©╫О©╫О©╫О©╫О©╫
+    echo [ERROR] н╢ур╣╫ .venv\Scripts\python.exe
+    echo гКохткпп MyCodex-Setup.bat ╟╡в╟рюю╣║ё
     pause
     exit /b 1
 )
 if not exist ".env" (
-    echo [ERROR] .env О©╫О©╫О©╫О©╫О©╫зёО©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ MyCodex-Setup.batО©╫О©╫
+    echo [ERROR] .env ╡╩╢Фтзё╛гКохткпп MyCodex-Setup.bat║ё
     pause
     exit /b 1
 )
 
-echo [1/3] мёж╧О©╫О©╫О©╫О©╫ MyCodex О©╫О©╫О©╫О©╫...
+echo [1/3] мёж╧╡╒гЕюМ MyCodex ╫ЬЁл...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop_mycodex.ps1" -CallerPid 0
 ping -n 3 127.0.0.1 >nul
 
-echo [2/3] О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ MyCodex...
+echo [2/3] уЩтзфТ╤╞ MyCodex...
 call "%~dp0MyCodex.bat"
 
-echo [3/3] О©╫х╢О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ъёО©╫О©╫О©╫О©╫ 60 О©╫Кё╘...
+echo [3/3] ╣х╢Щ╥ЧнЯиооъё╗вНЁ╓ 60 цКё╘...
 set /a TRIES=0
 
 :WAIT_LOOP
@@ -33,11 +33,11 @@ ping -n 2 127.0.0.1 >nul
 goto WAIT_LOOP
 
 :ONLINE
-echo [OK] MyCodex О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫О©╫ъёО©╫
+echo [OK] MyCodex ряжьпбиооъё║
 goto END
 
 :OFFLINE
-echo [X] 60 О©╫О©╫О©╫з╥О©╫О©╫О©╫н╢О©╫О©╫О©╫ъёО©╫О©╫О©╫И©╢ logs\mycodex.log О©╫е╡И║ё
+echo [X] 60 цКдз╥ЧнЯн╢иооъё╛гК╡И©╢ logs\mycodex.log ее╡И║ё
 
 :END
 echo.

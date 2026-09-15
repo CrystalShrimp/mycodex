@@ -3,7 +3,7 @@
 > 这份文档面向**帮客户部署 MyCodex 的 Agent**（人或不人）。读完应能：
 > 1. 在 10 分钟内完成一台 Windows 机器的部署
 > 2. 用 **Auto feishu** 一键完成飞书开放平台配置（5 分钟，客户只登录一次）
-> 3. 处理 90% 的个性化需求（快捷命令、权限、自启动、profile 切换）
+> 3. 处理 90% 的个性化需求（快捷命令、权限、自启动、模型切换）
 
 如果你是**客户**而不是 Agent，请看 `doc/report.md`（产品介绍和魔法指令用法）。
 
@@ -11,7 +11,7 @@
 
 ## 1. MyCodex 是什么（30 秒版）
 
-把客户本机已装好的 Claude Code CLI 包装成飞书机器人。飞书消息 → MyCodex 调本地 `claude` → 流式回飞书卡片，写文件/跑命令前弹审批卡片。**代码、API Key、对话历史全部留在客户本机**。
+把客户本机已装好的 OpenAI Codex CLI 包装成飞书机器人。飞书消息 → MyCodex 调本地 `codex exec` → 流式回飞书卡片，写文件/跑命令前弹审批卡片。**代码、API Key、对话历史全部留在客户本机**；模型调用走本机 ChatGPT 登录态（`codex login`），不配置任何供应商 API Key。
 
 ---
 
@@ -22,13 +22,13 @@
 | 项 | 检查命令 | 期望 | 缺失处理 |
 |---|---|---|---|
 | Node.js | `node --version` | **v20+**（Auto feishu 要求） | https://nodejs.org/ 下载 LTS |
-| Claude Code CLI | `claude --version` | 已安装 | `npm i -g @anthropic-ai/claude-code` |
+| Codex CLI | `codex --version` | 已安装 | `npm i -g @openai/codex` |
+| Codex 登录 | `codex login status` | `Logged in` | 终端执行 `codex login`（浏览器 ChatGPT 授权） |
 | Python | `python --version` | 3.11+ | https://www.python.org/ |
 | uv | `uv --version` | 已安装 | `pip install uv` 或 PowerShell `irm https://astral.sh/uv/install.ps1 \| iex` |
 | 飞书账号 | 能登录 open.feishu.cn | 已是企业管理员或有自建应用权限 | 联系客户企业管理员开通 |
-| 至少一家模型供应商 Key | GLM / Kimi / DeepSeek / Anthropic | 已申请 | 见 §5 profile 配置 |
 
-Windows 上 Claude CLI 通过 `shutil.which()` 解析，会自动找到 `claude.CMD`，**不需要手动配完整路径**。
+Windows 上 codex CLI 通过 `shutil.which()` 解析，会自动找到 `codex.CMD`，**不需要手动配完整路径**。
 
 ---
 
@@ -44,9 +44,8 @@ uv sync
 # 3. 复制环境变量模板
 cp examples/.env.example .env
 
-# 4. 配置至少一个 profile（API 供应商）—— 详见 §5
-cp examples/settings_glm.example.json config/settings_glm.json
-notepad config/settings_glm.json   # 填入 ANTHROPIC_AUTH_TOKEN
+# 4. 确认 Codex 已登录（模型走本机 ChatGPT 登录态，无需任何 API Key）—— 详见 §5
+codex login status    # 应显示 Logged in；否则执行 codex login
 
 # 5. 【推荐】用 Auto feishu 一键完成飞书配置（自动写 .env 的飞书字段）—— 详见 §6.1
 cd auto_feishu && setup.cmd
@@ -57,7 +56,7 @@ uv run python -m app.main
 # 看到 "Feishu WS client connecting..." 即成功
 ```
 
-启动后日志会打印：默认 workspace、允许的用户列表、Claude CLI 路径、WS 连接状态、active profile。
+启动后日志会打印：默认 workspace、允许的用户列表、Codex CLI 路径、WS 连接状态。
 
 **验证**：浏览器打开 `http://localhost:8090/health`，应返回 `{"status":"ok","ws_connected":true,...}`。
 
@@ -80,13 +79,14 @@ uv run python -m app.main
 
 > 用 Auto feishu 时这 4 项会自动从飞书后台抓取并写入 `.env`，不用手工填。
 
-### 4.2 Claude Code CLI
+### 4.2 Codex CLI
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `CLAUDE_CLI_PATH` | `"claude"` | CLI 名称或绝对路径，`shutil.which` 解析；Windows 自动找 `claude.CMD` |
-| `CLAUDE_DEFAULT_MODEL` | `"sonnet"` | 兜底模型档位（用户未选时用） |
-| `CLAUDE_DATA_DIR` | `""` | 本机 `.claude` 目录绝对路径；**留空时首次启动会让客户在飞书里选** |
+| `CODEX_CLI_PATH` | `"codex"` | CLI 名称或绝对路径，`shutil.which` 解析；Windows 自动找 `codex.CMD` |
+| `CODEX_DEFAULT_MODEL` | `""` | 兜底模型 slug（用户未选时用，如 `gpt-5.6-luna`） |
+
+> 认证完全依赖本机 `codex login` 的 ChatGPT 登录态（`~/.codex/auth.json`），没有 API Key 类配置。
 
 ### 4.3 工作区
 
@@ -101,16 +101,15 @@ uv run python -m app.main
 | `APPROVAL_TIMEOUT` | `600` | 模型选择卡片超时（秒，10 分钟） |
 | `TOOL_APPROVAL_TIMEOUT` | `1800` | 工具审批总超时（秒,30 分钟） |
 | `TOOL_APPROVAL_WARN_SECONDS` | `300` | 超时前预留催办窗口（秒，5 分钟） |
-| `APPROVAL_MODE` | `"m"` | 默认审批模式：`h`=全自动 / `m`=平衡 / `l`=严格 |
+| `APPROVAL_MODE` | `"m"` | 默认审批模式：`h`=严格（只读沙箱） / `m`=平衡（写入限工作区） / `l`=全自动（无沙箱） |
 
 > 用户在飞书里 `/mode X` 后会写到 `.preferences/`，**覆盖**这个默认值。
 
-### 4.5 Hook 配置
+### 4.5 单实例锁
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `MYCODEX_HOST` | `localhost` | hook 脚本回调 mycodex 的地址 |
-| `INSTANCE_LOCK_PORT` | `48922` | 单实例锁端口（与同机 mycodex 错开） |
+| `INSTANCE_LOCK_PORT` | `48922` | 单实例锁端口（与同机 mycodex 原项目错开） |
 
 ### 4.6 访问控制
 
@@ -130,73 +129,28 @@ uv run python -m app.main
 
 ---
 
-## 5. Profile 文件配置（API 供应商）
+## 5. 模型与推理档位（Codex）
 
-Profile 决定走哪家大模型。一个 profile = 一个 `config/settings_<name>.json` 文件。
+模型不需要任何配置文件：可用模型列表自动从 codex 本机缓存（`~/.codex/models_cache.json`，尊重 `CODEX_HOME`）读取；缓存缺失时回退到 `app/profiles.py` 内置的静态列表（gpt-5.6-terra 旗舰 / gpt-5.6-luna 均衡 / gpt-5.5 轻量）。
 
-### 5.1 文件结构
-
-以 `config/settings_glm.json` 为例：
-
-```json
-{
-  "env": {
-    "ANTHROPIC_AUTH_TOKEN": "<your-glm-token>",
-    "ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic",
-    "API_TIMEOUT_MS": "3000000",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-4.5-air",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-5-turbo",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-5.2"
-  },
-  "permissions": {
-    "allow": ["Bash(*)", "Write(*)", "Edit(*)", "NotebookEdit(*)",
-              "Read(*)", "Glob(*)", "Grep(*)", "WebSearch", "WebFetch"],
-    "deny": []
-  },
-  "model": "opus[1m]",
-  "skipDangerousModePermissionPrompt": true
-}
-```
-
-### 5.2 字段含义
-
-| 字段 | 必填 | 作用 |
-|---|---|---|
-| `env.ANTHROPIC_AUTH_TOKEN` | ★ | API Key |
-| `env.ANTHROPIC_BASE_URL` | ★ | API 入口 |
-| `env.ANTHROPIC_DEFAULT_HAIKU/SONNET/OPUS_MODEL` | 推荐 | 把 `haiku/sonnet/opus` 别名翻译成具体型号 |
-| `env.API_TIMEOUT_MS` | 可选 | 单次 API 调用超时（毫秒），长任务建议设大 |
-| `env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` | 可选 | `1`=关闭遥测 |
-| `permissions` | 可选 | 该 profile 下的工具权限白名单（**会被 mycodex 的 `claude_settings.json` 覆盖**） |
-| `model` | 可选 | **仅用于 `/provider` 卡片显示**，不参与决策（想改默认档位用 `/model` 命令） |
-| `skipDangerousModePermissionPrompt` | 可选 | `true`=跳过 CLI 终端危险确认（MyCodex 用飞书审批替代） |
-
-### 5.3 添加新供应商
+### 5.1 登录与验证
 
 ```bash
-# 1. 复制模板
-cp config/settings_glm.example.json config/settings_<新名字>.json
-
-# 2. 编辑填入 Key 和 Base URL
-notepad config/settings_<新名字>.json
-
-# 3. （可选）在 app/profiles.py 的 PROFILE_LABELS 里加中文标签
-#    PROFILE_LABELS = {"glm": "GLM (智谱)", "kimi": "Kimi (月之暗面)", "<新名字>": "xxx"}
-
-# 4. 重启服务后，飞书里 /provider <新名字> 即可切换
+codex login status    # 应显示 Logged in
+codex login           # 未登录时执行，浏览器 ChatGPT 授权
 ```
 
-仓库自带的模板：`settings_glm.example.json` / `settings_kimi.example.json` / `settings_deepseek.example.json`。`.example.json` 后缀的文件**不会被** `discover_profiles()` 加载，只是模板。
+`app/profiles.py` 的 `test_codex_auth()` 通过 `codex login status` 验证登录态（不消耗额度），`/status` 里会展示。
 
-### 5.4 active profile 标记
+### 5.2 切换模型 / 档位
 
-`config/active_profile` 是单行文本文件，内容是当前 active 的 profile 名（如 `glm`）。
+- 飞书发 `/model`（或 `/model gpt-5.6-luna`）：弹模型选择卡片 / 直接切换
+- 飞书发 `/level` 或 `/effort`：切推理强度 `low / medium / high / xhigh / max`
+- 兜底模型：`.env` 的 `CODEX_DEFAULT_MODEL`（留空用内置列表第一个）
 
-- 切换方式：飞书里发 `/provider glm`（或 `/provider`，弹卡片选）
-- 切换后：MyCodex 写标记文件 → kill 当前 CLI 进程 → POST `{base_url}/messages` 测连通
-- 文件为空或指向不存在的 profile：`get_active_profile()` 返回 `"unknown"`，子进程不注入 env，claude 报 `not logged in`（启动时 lifespan 会主动向 `ALLOWED_USERS` 提示）
+### 5.3 历史遗留说明
+
+旧版本的 `config/settings_<name>.json` 供应商 profile、`config/active_profile` 标记和 `/provider` 命令已移除——模型统一走本机 ChatGPT 登录态，不再注入任何供应商 env / API Key。
 
 ---
 
@@ -519,14 +473,14 @@ CONTEXT_CRITICAL_PERCENT=95     # 红警（建议 /new）
 `.env` 里：
 
 ```
-APPROVAL_MODE=m                 # h=全自动 m=平衡 l=严格
+APPROVAL_MODE=m                 # h=严格 m=平衡 l=全自动
 ```
 
 只影响**首次启动**；用户在飞书里 `/mode X` 后写到 `.preferences/{open_id}.json`，覆盖默认。
 
-### 7.7 启用/禁用 /compact 功能
+### 7.7 /compact 功能
 
-`config/settings.py` 里 `compact_enabled: bool = True`。改成 `False` 后，用户发 `/compact` 会收到"压缩功能已禁用"提示，且上下文告警文案会变成"用 `/new` 开新会话"。
+内置功能，无开关。用户发 `/compact` 压缩当前会话上下文；上下文超阈值时告警文案会建议 `/compact` 或 `/new`。
 
 ---
 
@@ -538,44 +492,42 @@ APPROVAL_MODE=m                 # h=全自动 m=平衡 l=严格
 |---|---|---|---|
 | 1 | 健康检查 | `curl http://localhost:8090/health` | `{"status":"ok","ws_connected":true,...}` |
 | 2 | 飞书收消息 | 在飞书发 "hello" | 看到流式卡片回复 |
-| 3 | /status | 飞书发 `/status` | 看到 session_id、workspace、provider/level/mode |
+| 3 | /status | 飞书发 `/status` | 看到 session_id、workspace、model/effort/mode |
 | 4 | /cd 列表 | 飞书发 `/cd`（不带参数） | 弹卡片列出本机历史工作区 |
-| 5 | 历史继承 | 切到老工作区发消息 | `/status` 显示消息数 > 0（说明 `--continue` 生效） |
-| 6 | mode l 审批 | `/mode l` 后让 claude 写文件 | 看到审批卡片 |
-| 7 | mode h 直通 | `/mode h` 后让 claude 写文件 | 无审批直接执行 |
+| 5 | 历史继承 | 切到老工作区发消息 | `/status` 显示消息数 > 0（说明 `resume` 生效） |
+| 6 | mode h 审批 | `/mode h` 后让 codex 写文件 | 看到审批卡片 |
+| 7 | mode l 直通 | `/mode l` 后让 codex 写文件 | 无审批直接执行 |
 | 8 | 运行日志 | `tail -f logs/mycodex.log` | 无 ERROR / Exception |
 | 9 | 审计日志 | `tail -f logs/audit.log` | 能看到 `command_received` 记录 |
 | 10 | 卡片回调 | 点审批卡片按钮 | 看到 toast "已允许/已拒绝" |
-| 11 | profile 切换 | `/provider <另一个>` | 看到 toast "模型已切换" |
-| 12 | 异常自愈 | 强杀 claude 子进程 | 收到飞书异常退出告警 |
+| 11 | 模型切换 | `/model <另一个 slug>` | 看到切换成功提示 |
+| 12 | 异常自愈 | 强杀 codex 子进程 | 收到飞书异常退出告警 |
 
 ---
 
 ## 9. 常见故障排除
 
-### 9.1 启动报 `FileNotFoundError: claude`
+### 9.1 启动报 `FileNotFoundError: codex`
 
-`shutil.which("claude")` 找不到。检查：
-
-```bash
-where claude              # Windows
-which claude              # Linux/Mac
-```
-
-如果没有，重装 Claude Code CLI：`npm i -g @anthropic-ai/claude-code`。
-
-如果路径特殊，在 `.env` 里设 `CLAUDE_CLI_PATH` 为绝对路径。
-
-### 9.2 启动报 `not logged in`
-
-`config/active_profile` 为空或指向不存在的 profile。
+`shutil.which("codex")` 找不到。检查：
 
 ```bash
-cat config/active_profile
-ls config/settings_*.json
+where codex              # Windows
+which codex              # Linux/Mac
 ```
 
-如果不匹配，飞书里发 `/provider <名字>` 重新选，或手动 `echo glm > config/active_profile`。
+如果没有，安装 Codex CLI：`npm i -g @openai/codex`。
+
+如果路径特殊，在 `.env` 里设 `CODEX_CLI_PATH` 为绝对路径。
+
+### 9.2 Codex 未登录
+
+模型调用依赖本机 ChatGPT 登录态。执行：
+
+```bash
+codex login status    # 查看登录态
+codex login           # 浏览器授权登录
+```
 
 ### 9.3 飞书消息收不到
 
@@ -605,20 +557,21 @@ ls config/settings_*.json
 netstat -ano | findstr :8090    # Windows
 ```
 
-要么 kill 占用进程，要么改 `.env` 的 `PORT`（同时改 `MYCODEX_PORT` 和 `auto_feishu/config.json` 的 `localServiceUrl` 保持一致）。
+要么 kill 占用进程，要么改 `.env` 的 `PORT`（同时改 `auto_feishu/config.json` 的 `localServiceUrl` 保持一致）。
 
 ### 9.6 进程异常退出循环
 
-看 `mycodex.log` 末尾的 `claude stderr:` 行，常见原因：
+看 `mycodex.log` 末尾的 codex stderr 行，常见原因：
 
-- API Key 失效（重申请新 Key，更新 profile）
-- API 限流（升级套餐或换供应商）
+- ChatGPT 登录态失效（重新 `codex login`）
 - workspace 路径不存在（`/cd` 切到有效目录）
-- Claude CLI 版本太旧（`npm update -g @anthropic-ai/claude-code`）
+- Codex CLI 版本太旧（`npm update -g @openai/codex`）
 
-### 9.7 Windows 中文乱码
+### 9.7 Windows 中文乱码 / 脚本编码
 
-`.bat` 文件首行加 `chcp 65001 >nul 2>&1`（切到 UTF-8）。`MyCodex-Debug.bat` 已自带。
+安装与启动脚本（`MyCodex.bat` / `MyCodex-Setup.bat` / `MyCodex-Restart.bat` / `auto_feishu\setup.cmd`）统一为 **GBK(ANSI) 编码 + CRLF 换行，不带 `chcp`**。
+
+> ⚠️ 不要把这些脚本重新保存为 UTF-8：UTF-8 + `chcp 65001` 的 .bat 在 Win10/11 上有已知解析 bug（含中文的行会破坏下一行的执行，下一行被当命令报错）。编辑脚本务必用可按 ANSI/GBK 保存的编辑器。
 
 ### 9.8 Auto feishu 反复失败
 
@@ -633,29 +586,23 @@ mycodex/                              # 项目根目录
 ├── .env                             # 环境变量（Auto feishu 会自动写飞书字段）
 ├── CLAUDEME.md                      # 本文件（Agent 配置指南）
 ├── config/
-│   ├── settings.py                  # pydantic-settings 配置定义
-│   ├── settings_<name>.json         # API 供应商 profile
-│   ├── settings_<name>.example.json # profile 模板
-│   ├── active_profile               # 当前 active profile 名
-│   ├── approval_rules.json          # 动态审批规则配置（工具白/黑名单）
-│   └── claude_settings.json         # MyCodex 自有 claude 配置（代码生成，别手改）
+│   └── settings.py                  # pydantic-settings 配置定义
 ├── app/
 │   ├── main.py                      # FastAPI 入口 + WS 长连接 + /health 端点
-│   ├── profiles.py                  # profile 切换、test_profile 测连通
+│   ├── profiles.py                  # Codex 模型注册表（models_cache 解析 + test_codex_auth）
 │   ├── feishu/
 │   │   ├── client.py                # 飞书 API 客户端
 │   │   ├── events.py                # 消息分发 + 命令路由
 │   │   ├── cards.py                 # 飞书卡片模板
 │   │   └── ws.py                    # WebSocket 长连接
-│   ├── agent/cli_loop.py            # Claude CLI 子进程管理 + JSONL 解析
+│   ├── agent/cli_loop.py            # Codex CLI 子进程管理 + JSONL 解析
+│   ├── agent/codex_sessions.py      # codex 会话历史（thread_id 续聊）
 │   ├── approval/manager.py          # 审批状态机（Future + 超时）
-│   ├── hooks/router.py              # PreToolUse HTTP 端点 + Bash 风险分析
 │   ├── audit/logger.py              # JSON-lines 审计日志
 │   ├── models/schemas.py            # 数据模型
-│   └── state/preferences.py         # per-user 的 provider/level/mode 持久化
-├── examples/                        # 用户配置与环境变量模板目录
-│   ├── .env.example                 #   .env 样例模板
-│   └── settings_*.example.json      #   各种 API 供应商配置样例
+│   └── state/preferences.py         # per-user 的 model/effort/mode 持久化
+├── examples/                        # 环境变量模板目录
+│   └── .env.example                 #   .env 样例模板
 ├── logs/                            # 运行时日志目录
 │   ├── mycodex.log                   #   运行日志（10MB × 5 轮转）
 │   └── audit.log                    #   审计日志（JSON-lines）
@@ -673,11 +620,11 @@ mycodex/                              # 项目根目录
 │   │   └── mycodex-post-setup.mjs    #   后置钩子
 │   └── artifacts/                   #   截图 / HTML / storage state（别提交 Git）
 ├── scripts/
-│   ├── hooks/pre_tool_use.py        # PreToolUse hook 脚本（claude 子进程调用）
 │   ├── tray.pyw                     # Windows 系统托盘版启动器
 │   ├── restart_service.py           # 重启服务工具
+│   ├── stop_mycodex.ps1             # 停止/清理残留进程
 │   ├── setup_autostart.bat          # Windows 开机自启快捷方式生成脚本
-│   ├── diagnose_deepseek.py         # DeepSeek 诊断工具
+│   ├── start.sh                     # Linux/Mac 启动脚本
 │   └── feishu_bot/                  # ⚠️ 早期自动化废弃产物（仅 MANUAL_SETUP.md 和 openclaw-scopes.json 有用）
 ├── doc/                             # 文档
 ├── flow/                            # 架构图
@@ -697,6 +644,5 @@ mycodex/                              # 项目根目录
 - `scripts/feishu_bot/MANUAL_SETUP.md` — 飞书手工配置 8 步流程（兜底方案）
 - `doc/TROUBLESHOOTING.md` — 飞书 SDK 详细踩坑（loop 问题、卡片回调、API 注意事项）
 - `doc/auto.md` — 飞书开放平台自动化经验（Monaco 编辑器、checkpoint、发布流程等）
-- `doc/hook.md` — MyCodex 对 claude-code 的 6 大改造点 + Hook 审批系统架构深度分析
 - `flow/architecture.html` — HTML 架构图
 - `flow/ASYNC_FLOW_MERMAID.md` — Mermaid 流程图

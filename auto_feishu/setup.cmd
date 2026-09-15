@@ -2,11 +2,6 @@
 setlocal
 cd /d "%~dp0"
 
-if /I "%HTTP_PROXY%"=="http://127.0.0.1:6984" set HTTP_PROXY=
-if /I "%HTTPS_PROXY%"=="http://127.0.0.1:6984" set HTTPS_PROXY=
-if /I "%http_proxy%"=="http://127.0.0.1:6984" set http_proxy=
-if /I "%https_proxy%"=="http://127.0.0.1:6984" set https_proxy=
-
 echo ===================================================
 echo             auto_feishu 环境自检与一键配置
 echo ===================================================
@@ -41,7 +36,14 @@ curl.exe -L -o "%MSI_PATH%" "https://npmmirror.com/mirrors/node/v20.18.0/node-v2
 if exist "%MSI_PATH%" (
     echo [!] 正在静默安装 Node.js...
     msiexec.exe /i "%MSI_PATH%" /quiet /norestart
-    del /f /q "!MSI_PATH!" >nul 2>&1
+    if errorlevel 1 (
+        del /f /q "%MSI_PATH%" >nul 2>&1
+        echo [ERROR] Node.js 静默安装失败（通常是因为没有管理员权限）。
+        echo 请以管理员身份重开 cmd 再运行本脚本，或手动安装 Node.js 20+ 后重跑。
+        pause
+        exit /b 1
+    )
+    del /f /q "%MSI_PATH%" >nul 2>&1
     set "PATH=%ProgramFiles%\nodejs;%PATH%"
     echo [OK] Node.js 20.18.0 安装完成！
     echo [注意] 如后续 node 命令不可用，请重新运行本脚本或重开 cmd 窗口。
@@ -77,8 +79,6 @@ if errorlevel 1 (
 )
 
 :CHROMIUM_INSTALL
-REM === 3. Chromium 安装（幂等：playwright 自行校验所需构建版本，已装且匹配则秒过） ===
-
 REM === 3. Chromium 安装（幂等：playwright 自行校验所需构建版本，已装且匹配则秒过） ===
 echo [INFO] Ensuring Playwright Chromium is installed...
 call npx playwright install chromium
