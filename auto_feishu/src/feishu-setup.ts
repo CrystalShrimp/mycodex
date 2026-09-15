@@ -1125,6 +1125,7 @@ async function gotoWithConfirmation(ctx: StepContext, urls: string[], confirmati
     try {
       ctx.logger.debug(`尝试打开：${url}`);
       await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
+      ctx.logger.info(`正在确认${description}页面已加载...`);
       const signal = await waitForAnyText(ctx.page, confirmationTexts, Math.max(4000, ctx.config.timeoutMs));
       if (signal) {
         ctx.logger.debug(`页面确认成功：${description} -> ${signal}`);
@@ -1269,7 +1270,8 @@ async function hasExactStartedTag(root: Locator): Promise<boolean> {
   }
 }
 
-async function countVisibleAppCardsByName(page: Page, appName: string): Promise<number> {
+async function countVisibleAppCardsByName(page: Page, appName: string, logger?: Logger): Promise<number> {
+  const countStart = Date.now();
   const cards = page.locator(".app-card, [class*='app-card']");
   const count = Math.min(await cards.count(), 20);
   let visibleCount = 0;
@@ -1281,10 +1283,12 @@ async function countVisibleAppCardsByName(page: Page, appName: string): Promise<
         continue;
       }
 
-      const title = await card
-        .locator(".app-card__title, [class*='app-card__title']")
-        .first()
-        .innerText()
+      const titleLocator = card.locator(".app-card__title, [class*='app-card__title']").first();
+      if (!(await titleLocator.count().catch(() => 0))) {
+        continue;
+      }
+      const title = await titleLocator
+        .innerText({ timeout: 1000 })
         .then((value) => value.trim())
         .catch(() => "");
 
@@ -1296,6 +1300,9 @@ async function countVisibleAppCardsByName(page: Page, appName: string): Promise<
     }
   }
 
+  logger?.debug(
+    `同名应用卡片计数：匹配元素 ${count} 个，可见同名 ${visibleCount} 个，耗时 ${Date.now() - countStart}ms`
+  );
   return visibleCount;
 }
 
@@ -1419,94 +1426,131 @@ async function listStartedAppCandidates(page: Page): Promise<StartedAppCandidate
   return items;
 }
 
-async function listStartedAppCandidatesV2(page: Page): Promise<StartedAppCandidate[]> {
-  const scanPromise = (async () => {
-    const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
-    const acceptedStatuses = ["已启动", "已启用"];
-    const candidates: StartedAppCandidate[] = [];
-    const seen = new Set<string>();
+async function listStartedAppCandidatesV2(page: Page, logger?: Logger): Promise<StartedAppCandidate[]> {
+  const deadline = Date.now() + 2500;
+  let round = 0;
 
-    const appCards = page.locator(".app-card, [class*='app-card']");
-    const cardCount = Math.min(await appCards.count().catch(() => 0), 50);
-
-    for (let index = 0; index < cardCount; index += 1) {
-      const card = appCards.nth(index);
-      let cardText = "";
-
-      try {
-        if (!(await card.isVisible())) {
-          continue;
-        }
-        cardText = normalize(await card.innerText());
-      } catch {
-        continue;
-      }
-
-      if (!cardText || !(await hasExactStartedTag(card))) {
-        continue;
-      }
-
-      const title = await card
-        .locator(".app-card__title, [class*='app-card__title']")
-        .first()
-        .innerText()
-        .then((value) => normalize(value))
-        .catch(() => "");
-      const status = await card
-        .locator(".ud__tag__content, [class*='tag__content']")
-        .first()
-        .innerText()
-        .then((value) => normalize(value))
-        .catch(() => "");
-      if (!acceptedStatuses.includes(status)) {
-        continue;
-      }
-      const candidateName =
-        title ||
-        cardText
-          .split(/\n| {2,}/)
-          .map((part) => normalize(part))
-          .find(
-            (part) =>
-              part !== "已启动" &&
-              !["创建应用", "创建企业自建应用", "企业自建应用", "开发者后台"].includes(part) &&
-              part.length >= 2 &&
-              part.length <= 80
-          ) ||
-        "";
-
-      if (!candidateName) {
-        continue;
-      }
-
-      const key = `${candidateName}__${cardText}`;
-      if (seen.has(key)) {
-        continue;
-      }
-
-      seen.add(key);
-      candidates.push({
-        name: candidateName,
-        status,
-        containerText: cardText
-      });
+  while (Date.now() < deadline) {
+    const roundStart = Date.now();
+    const candidates = await scanStartedAppCandidatesOnce(page, logger);
+    round += 1;
+    logger?.debug(
+      `已启动实例扫描第 ${round} 轮：候选 ${candidates.length} 个，耗时 ${Date.now() - roundStart}ms`
+    );
+    if (candidates.length > 0) {
+      return candidates;
     }
 
-    return candidates.slice(0, 10);
-  })();
+    const renderedCardCount = await page
+      .locator(".app-card, [class*='app-card']")
+      .count()
+      .catch(() => 0);
+    if (renderedCardCount > 0) {
+      // 应用列表已渲染但无“已启动”实例 — 无需继续等待
+      return [];
+    }
 
-  const timeoutPromise = new Promise<StartedAppCandidate[]>((resolve) =>
-    setTimeout(() => resolve([]), 1500)
+    await page.waitForTimeout(250);
+  }
+
+  return [];
+}
+
+async function scanStartedAppCandidatesOnce(page: Page, logger?: Logger): Promise<StartedAppCandidate[]> {
+  const normalize = (value: string): string => value.replace(/\s+/g, " ").trim();
+  const acceptedStatuses = ["已启动", "已启用"];
+  const candidates: StartedAppCandidate[] = [];
+  const seen = new Set<string>();
+  const passStart = Date.now();
+  let slowestCardMs = 0;
+
+  const appCards = page.locator(".app-card, [class*='app-card']");
+  const cardCount = Math.min(await appCards.count().catch(() => 0), 50);
+
+  for (let index = 0; index < cardCount; index += 1) {
+    const cardStart = Date.now();
+    const card = appCards.nth(index);
+    let cardText = "";
+
+    try {
+      if (!(await card.isVisible())) {
+        continue;
+      }
+      cardText = normalize(await card.innerText());
+    } catch {
+      continue;
+    }
+    slowestCardMs = Math.max(slowestCardMs, Date.now() - cardStart);
+
+    if (!cardText || !(await hasExactStartedTag(card))) {
+      continue;
+    }
+
+    const title = await card
+      .locator(".app-card__title, [class*='app-card__title']")
+      .first()
+      .innerText({ timeout: 1000 })
+      .then((value) => normalize(value))
+      .catch(() => "");
+    const status = await card
+      .locator(".ud__tag__content, [class*='tag__content']")
+      .first()
+      .innerText({ timeout: 1000 })
+      .then((value) => normalize(value))
+      .catch(() => "");
+    if (!acceptedStatuses.includes(status)) {
+      continue;
+    }
+    const candidateName =
+      title ||
+      cardText
+        .split(/\n| {2,}/)
+        .map((part) => normalize(part))
+        .find(
+          (part) =>
+            part !== "已启动" &&
+            !["创建应用", "创建企业自建应用", "企业自建应用", "开发者后台"].includes(part) &&
+            part.length >= 2 &&
+            part.length <= 80
+        ) ||
+      "";
+
+    if (!candidateName) {
+      continue;
+    }
+
+    const key = `${candidateName}__${cardText}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    candidates.push({
+      name: candidateName,
+      status,
+      containerText: cardText
+    });
+  }
+
+  logger?.debug(
+    `单轮扫描汇总：匹配元素 ${cardCount} 个，总耗时 ${Date.now() - passStart}ms，最慢单元素 ${slowestCardMs}ms`
   );
 
-  return Promise.race([scanPromise, timeoutPromise]);
+  return candidates.slice(0, 10);
 }
 
 async function chooseStartedApp(ctx: StepContext): Promise<StartedAppCandidate | null> {
-  await ctx.page.waitForLoadState("domcontentloaded").catch(() => undefined);
-  await ctx.page.waitForTimeout(1000);
+  const loadStateStart = Date.now();
+  await ctx.page
+    .waitForLoadState("domcontentloaded", { timeout: 5000 })
+    .catch(() => undefined);
+  ctx.logger.debug(`chooseStartedApp: domcontentloaded 等待 ${Date.now() - loadStateStart}ms`);
 
-  const candidates = await listStartedAppCandidatesV2(ctx.page);
+  const scanStart = Date.now();
+  const candidates = await listStartedAppCandidatesV2(ctx.page, ctx.logger);
+  ctx.logger.debug(
+    `chooseStartedApp: 实例扫描总耗时 ${Date.now() - scanStart}ms，候选 ${candidates.length} 个`
+  );
   if (candidates.length === 0) {
     const pageText = await ctx.page
       .locator("body")
@@ -1572,7 +1616,7 @@ async function openAppByName(ctx: StepContext, appName: string, preferStarted = 
         const actualStatus = await card
           .locator(".ud__tag__content, [class*='tag__content']")
           .first()
-          .innerText()
+          .innerText({ timeout: 1000 })
           .then((value) => value.trim())
           .catch(() => "");
         if (actualStatus !== expectedStatus) {
@@ -1666,9 +1710,13 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
   ctx.logger.info("正在切换到“企业自建应用”页签...");
   await clickSelfBuiltAppsTab(ctx).catch(() => false);
 
-  ctx.logger.info("正在检测是否有已启动状态的应用实例...");
-  const startedApp = ctx.config.reuseStartedApp ? await chooseStartedApp(ctx) : null;
+  let startedApp: StartedAppCandidate | null = null;
+  if (ctx.config.reuseStartedApp) {
+    ctx.logger.info("正在检测是否有已启动状态的应用实例...");
+    startedApp = await chooseStartedApp(ctx);
+  }
   if (startedApp) {
+    ctx.logger.info(`检测到已启动实例“${startedApp.name}”，正在进入应用后台...`);
     const opened = await openAppByName(ctx, startedApp.name, true, startedApp.status);
     if (!opened) {
       await manualTakeover(ctx, "进入已启动飞书实例后台", [
@@ -1681,6 +1729,7 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
     ctx.result.existingAppReused = true;
     ctx.result.existingStartedAppChosen = true;
     ctx.result.reusedAppName = startedApp.name;
+    ctx.logger.info("正在等待应用后台页面加载完成（最长约 20 秒）...");
     const appSignal = await waitForAnyText(ctx.page, APP_BACKEND_SIGNALS, ctx.config.timeoutMs);
     if (!appSignal) {
       await manualTakeover(ctx, "进入已启动飞书实例后台", [
@@ -1691,12 +1740,14 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
     return;
   }
 
-  const sameNameCardCount = await countVisibleAppCardsByName(ctx.page, ctx.config.appName);
+  ctx.logger.info(`正在扫描同名应用“${ctx.config.appName}”的卡片...`);
+  const sameNameCountStart = Date.now();
+  const sameNameCardCount = await countVisibleAppCardsByName(ctx.page, ctx.config.appName, ctx.logger);
+  ctx.logger.debug(`同名卡片计数总耗时 ${Date.now() - sameNameCountStart}ms`);
   if (ctx.config.reuseStartedApp && sameNameCardCount > 1) {
     throw new Error(`检测到 ${sameNameCardCount} 个同名应用“${ctx.config.appName}”，但没有锁定到“已启动”标签，已停止自动选择。`);
   }
 
-  ctx.logger.info(`正在扫描“${ctx.config.appName}”已有应用卡片...`);
   const existingApp = await firstVisibleLocator([ctx.page.getByText(toRegex(ctx.config.appName))], 3000);
   if (existingApp) {
     ctx.logger.info(`检测到同名已有应用“${ctx.config.appName}”，请在下方确认是否复用：`);
@@ -2361,18 +2412,26 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
 }
 
 async function verifyPublishLive(ctx: StepContext): Promise<{ ok: boolean; detail: string }> {
-  // ok=true 表示"无待发布修改"可跳过发版；ok=false 表示后台挂着
-  // "版本发布后，当前修改方可生效"提示（如重新添加的事件还没随版本生效）。
+  // 只有页面明确显示“当前修改均已发布”才允许跳过发版，其余情况一律执行发版。
+  // 历史教训：曾以“未出现『版本发布后，当前修改方可生效』横幅”为跳过依据，
+  // 但全新未发布应用显示的是『应用发布后，当前配置方可生效』，文案对不上，
+  // 导致全新安装永远跳过发版、应用停留在“待上线”。
   if (!ctx.result.appId) return { ok: false, detail: "无 App ID" };
   try {
     const url = `https://open.feishu.cn/app/${ctx.result.appId}/baseinfo`;
     await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
     await ctx.page.waitForTimeout(4000);
     const body = await ctx.page.locator("body").innerText().catch(() => "");
+    if (body.includes("当前修改均已发布")) {
+      return { ok: true, detail: "" };
+    }
+    if (body.includes("应用发布后，当前配置方可生效")) {
+      return { ok: false, detail: "应用尚未发布（待上线）" };
+    }
     if (body.includes("版本发布后，当前修改方可生效")) {
       return { ok: false, detail: "存在未发布的修改（版本发布后方可生效）" };
     }
-    return { ok: true, detail: "" };
+    return { ok: false, detail: "未能确认“当前修改均已发布”，保守执行发版" };
   } catch (e) {
     // 页面打不开时不冒险跳过——交由发版流程自行处理
     return { ok: false, detail: `基础信息页无法打开：${e}` };
