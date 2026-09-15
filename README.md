@@ -52,7 +52,7 @@ scripts/        托盘程序、重启脚本、开机自启等
 
 ## 配置入口
 
-- **`.env`**：从 `examples/.env.example` 复制。包含飞书凭据、`ALLOWED_USERS` 访问白名单、默认工作区、服务端口（8090，与同机 myclaw 项目错开）等；
+- **`.env`**：从 `examples/.env.example` 复制。包含飞书凭据、`ALLOWED_USERS` 访问白名单、默认工作区、服务端口（8090）等；
 - **`icon.png` / `icon.jpg` / `icon.ico`**（可选）：放到项目根目录可自定义托盘图标，缺失时使用系统默认图标。
 
 ## 路线图

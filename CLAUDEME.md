@@ -318,11 +318,11 @@ Auto feishu **可重复运行**，每次会：
 
 ### 6.2 方式 B：手工配置（兜底）
 
-如果 Auto feishu 因飞书页面改版、租户策略等失败，可以手工配置。完整步骤见 `scripts/feishu_bot/MANUAL_SETUP.md`（8 步流程，15-20 分钟），简要：
+如果 Auto feishu 因飞书页面改版、租户策略等失败，可以手工配置（约 15-20 分钟）：
 
 1. https://open.feishu.cn 登录 → 创建企业自建应用
 2. **应用功能 → 机器人** → 开启
-3. **权限管理 → 批量导入** → 粘贴 `scripts/feishu_bot/openclaw-scopes.json`（22 tenant + 3 user scope）→ 申请开通
+3. **权限管理 → 批量导入** → 粘贴 `auto_feishu/feishu-permissions.json` 内容 → 申请开通
 4. **凭证与基础信息** → 复制 App ID / App Secret，手工填到 `.env`
 5. 启动本地 MyCodex 服务（`uv run python -m app.main`）
 6. **事件与回调 → 事件配置** → 选**长连接**模式 → 添加 `im.message.receive_v1`
@@ -331,8 +331,6 @@ Auto feishu **可重复运行**，每次会：
 9. 飞书里搜机器人名字发消息测试
 
 > **顺序很重要**：第 5 步（启动本地服务）必须早于第 6 步（配置事件订阅长连接），否则飞书会拒绝保存。
-
-> 注意：`scripts/feishu_bot/` 下的 `recorder.py` / `replayer.py` / `diagnose_session.py` / `HANDOFF.md` / `help.md` 是早期自动化尝试的废弃产物（卡在 CSRF token），**已废弃不用**。保留的有用文件只有 `MANUAL_SETUP.md` 和 `openclaw-scopes.json`。
 
 ### 6.3 发布与可用范围（两种方式都要做）
 
@@ -354,7 +352,7 @@ Auto feishu **可重复运行**，每次会：
 ```json
 {
   "开发根目录": "D:\\ForRunning\\ForDev",
-  "mycodex": "D:\\ForRunning\\ForDev\\openclaw",
+  "mycodex": "D:\\ForRunning\\ForDev\\mycodex",
   "指数复现": "D:\\ForRunning\\ForQuant\\projects\\recur_gz",
   "默认目录": "D:\\ForRunning\\ForDev\\0_default"
 }
@@ -625,9 +623,7 @@ mycodex/                              # 项目根目录
 │   ├── stop_mycodex.ps1             # 停止/清理残留进程
 │   ├── setup_autostart.bat          # Windows 开机自启快捷方式生成脚本
 │   ├── start.sh                     # Linux/Mac 启动脚本
-│   └── feishu_bot/                  # ⚠️ 早期自动化废弃产物（仅 MANUAL_SETUP.md 和 openclaw-scopes.json 有用）
 ├── doc/                             # 文档
-├── flow/                            # 架构图
 ├── .preferences/                    # per-user 运行时偏好（自动生成）
 ├── .sessions/                       # per-user session 路由状态（自动生成）
 ├── MyCodex.bat / MyCodex-Restart.bat  # Windows 启动器
@@ -641,8 +637,5 @@ mycodex/                              # 项目根目录
 
 - `doc/report.md` — 客户向产品介绍和魔法指令用法
 - `auto_feishu/README.md` — Auto feishu 工具的简版说明
-- `scripts/feishu_bot/MANUAL_SETUP.md` — 飞书手工配置 8 步流程（兜底方案）
 - `doc/TROUBLESHOOTING.md` — 飞书 SDK 详细踩坑（loop 问题、卡片回调、API 注意事项）
 - `doc/auto.md` — 飞书开放平台自动化经验（Monaco 编辑器、checkpoint、发布流程等）
-- `flow/architecture.html` — HTML 架构图
-- `flow/ASYNC_FLOW_MERMAID.md` — Mermaid 流程图

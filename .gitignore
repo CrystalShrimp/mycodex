@@ -49,22 +49,6 @@ Thumbs.db
 doc/*
 !doc/report.md
 
-# Debug
-openclaw_debug/
-
-# Legacy feishu_bot automation artifacts — contain live session tokens,
-# browser profile (cookies/login state) and recorded HTTP traffic with secrets.
-# The whole toolchain is deprecated; only MANUAL_SETUP.md and openclaw-scopes.json are useful.
-scripts/feishu_bot/chrome_profile/
-scripts/feishu_bot/recording/
-scripts/feishu_bot/artifacts/
-# Deprecated feishu_bot automation leftovers (per CLAUDEME.md: only
-# MANUAL_SETUP.md and openclaw-scopes.json are still used) — internal only
-scripts/feishu_bot/recorder.py
-scripts/feishu_bot/replayer.py
-scripts/feishu_bot/diagnose_session.py
-scripts/feishu_bot/HANDOFF.md
-scripts/feishu_bot/help.md
 # Feishu setup runtime artifacts and credentials
 auto_feishu/feishu-app-result.json
 auto_feishu/artifacts/

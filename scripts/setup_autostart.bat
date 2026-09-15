@@ -7,7 +7,6 @@ echo ===================================================
 echo.
 
 set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
-REM 快捷方式名与同机 mycodex 原项目错开，避免互相覆盖启动项。
 set "NEW_LNK=%STARTUP_DIR%\MyCodex.lnk"
 set "MYCODEX_BAT=%~dp0..\MyCodex.bat"
 
@@ -19,12 +18,8 @@ if not exist "%MYCODEX_BAT%" (
     exit /b 1
 )
 
-echo [1/2] Cleaning up old OpenClaw startup shortcuts...
-if exist "%STARTUP_DIR%\OpenClaw.lnk" del /f /q "%STARTUP_DIR%\OpenClaw.lnk"
-if exist "%STARTUP_DIR%\OpenClaw.bat.lnk" del /f /q "%STARTUP_DIR%\OpenClaw.bat.lnk"
-if exist "%STARTUP_DIR%\OpenClaw-Debug.lnk" del /f /q "%STARTUP_DIR%\OpenClaw-Debug.lnk"
 
-echo [2/2] Creating new MyCodex startup shortcut...
+echo [1/1] Creating new MyCodex startup shortcut...
 set "VBS_SCRIPT=%TEMP%\create_mycodex_shortcut.vbs"
 
 echo Set WshShell = CreateObject("WScript.Shell") > "%VBS_SCRIPT%"

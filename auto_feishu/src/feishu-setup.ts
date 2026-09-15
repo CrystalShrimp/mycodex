@@ -1917,7 +1917,7 @@ async function readFeishuCredentials(envPath: string): Promise<{ appId: string; 
     return null;
   }
 }
-async function stopLocalClawService(ctx: StepContext): Promise<void> {
+async function stopLocalService(ctx: StepContext): Promise<void> {
   if (process.platform !== "win32") return;
   try {
     const out = execFileSync("cmd", ["/c", "netstat -ano | findstr :8080"], { encoding: "utf8" }).toString();
@@ -1941,7 +1941,7 @@ async function stopLocalClawService(ctx: StepContext): Promise<void> {
   }
 }
 
-async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
+async function waitForLocalServiceOnline(ctx: StepContext): Promise<void> {
   const url = ctx.config.localServiceUrl;
   const deadline = Date.now() + ctx.config.localServiceWaitMs;
   let lastError = "服务未响应";
@@ -1953,14 +1953,14 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
       const response = await fetch(url);
       const body = (await response.json()) as { status?: string; ws_connected?: boolean };
       if (response.ok && body.status === "ok" && body.ws_connected === true) {
-        ctx.logger.info("本地 claw 服务在线，WebSocket 已连接：" + url);
+        ctx.logger.info("本地 MyCodex 服务在线，WebSocket 已连接：" + url);
         return;
       }
       lastError = "服务已响应，但 WebSocket 未连接（" + JSON.stringify(body) + "）";
       // 服务多半是带着旧/空凭据启动的：停掉它，下一轮 fetch 失败时会被重新拉起并加载最新 .env
       if (!restarted && ctx.config.startLocalService) {
         ctx.logger.warn("WebSocket 未连接，重启本地服务以加载刚写入的 .env 凭据...");
-        await stopLocalClawService(ctx);
+        await stopLocalService(ctx);
         started = false;
         restarted = true;
       }
@@ -1972,7 +1972,7 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
           : path.join(ctx.config.localServiceRootDir, ".venv", "bin", "python");
         if (!(await pathExists(python))) {
           throw new Error(
-            "本地 claw 服务无法启动：未找到 " + python +
+            "本地 MyCodex 服务无法启动：未找到 " + python +
             "。请先在项目根目录运行 MyCodex-Setup.bat（或执行 uv sync）完成 Python 环境安装，再重跑 setup.cmd。"
           );
         }
@@ -1987,7 +1987,7 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
         });
         child.unref();
         started = true;
-        ctx.logger.info("本地 claw 服务未运行，已尝试启动：" + ctx.config.localServiceRootDir);
+        ctx.logger.info("本地 MyCodex 服务未运行，已尝试启动：" + ctx.config.localServiceRootDir);
         ctx.logger.info("服务启动日志（若一直未上线请查看）：" + bootLogPath);
       }
     }
@@ -2006,7 +2006,7 @@ async function waitForLocalClawOnline(ctx: StepContext): Promise<void> {
   }
 
   throw new Error(
-    "本地 claw 服务未达到可订阅状态：" + lastError
+    "本地 MyCodex 服务未达到可订阅状态：" + lastError
     + "。请确认根目录 .env 已写入 FEISHU_APP_ID/FEISHU_APP_SECRET，然后检查 "
     + url + " 和 mycodex.log。"
     + (bootTail ? "\n服务启动日志最后几行：\n" + bootTail : "")
@@ -2080,124 +2080,6 @@ async function fetchCredentials(ctx: StepContext): Promise<void> {
   await persistResult(ctx.config, ctx.result);
 }
 
-async function importPermissions(ctx: StepContext): Promise<void> {
-  const clicked = await clickByCandidates(ctx.page, ["权限管理", "权限"], ctx.config.timeoutMs, ctx.logger);
-  if (!clicked) {
-    await manualTakeover(ctx, "进入权限管理页面", [
-      "请在左侧菜单中手动打开“权限管理”。",
-      "打开后保持页面停留在权限列表区域。"
-    ]);
-  }
-
-  const importButton = await waitForEnabledAction(
-    ctx.page,
-    ["批量导入/导出权限", "批量导入", "导入权限", "导入"],
-    ctx.config.timeoutMs
-  );
-  if (!importButton) {
-    await manualTakeover(ctx, "打开批量导入弹窗", [
-      "请手动点击“批量导入”按钮，打开权限导入弹窗。",
-      "弹窗出现后不要关闭浏览器。"
-    ]);
-  } else {
-    await importButton.locator.scrollIntoViewIfNeeded().catch(() => undefined);
-    await importButton.locator.click({ timeout: ctx.config.timeoutMs, force: true });
-    ctx.logger.debug(`已点击权限导入入口：${importButton.text}`);
-  }
-
-  const modal = await findVisibleModal(ctx.page, Math.min(ctx.config.timeoutMs, 5000));
-  const formRoot = modal ?? ctx.page;
-
-  const rawPermissions = JSON.parse(await readFile(ctx.config.permissionsImportJsonPath, "utf8")) as {
-    scopes?: {
-      tenant?: string[];
-      user?: string[];
-    };
-  };
-
-  if (!ctx.config.enableGroupMessagePermission) {
-    rawPermissions.scopes = rawPermissions.scopes ?? {};
-    rawPermissions.scopes.tenant = (rawPermissions.scopes.tenant ?? []).filter(
-      (scope) => scope !== "im:message.group_msg"
-    );
-  }
-
-  const payload = JSON.stringify(rawPermissions, null, 2);
-  // 页面存在隐藏的只读 Monaco（common-monaco-editor--readOnly，DOM 顺序在前），
-  // .first() 会瞄准幽灵编辑器：粘贴落空/JSON 损坏/提交按钮禁用。必须按可见性过滤。
-  const monacoEditor = formRoot.locator(".monaco-editor:visible").first();
-  const monacoInput = formRoot
-    .locator(".monaco-editor:visible textarea.inputarea, textarea.inputarea:visible, [role='textbox'][aria-roledescription='editor']:visible")
-    .first();
-  const editor = await firstVisibleLocator(
-    [monacoInput, formRoot.locator("[contenteditable='true']"), formRoot.locator("textarea")],
-    ctx.config.timeoutMs
-  );
-
-  if (!editor) {
-    await manualTakeover(ctx, "粘贴权限 JSON", [
-      `请把文件内容手动粘贴到导入框：${ctx.config.permissionsImportJsonPath}`,
-      "粘贴后再继续。"
-    ]);
-  } else {
-    const hasMonaco = (await monacoEditor.count().catch(() => 0)) > 0;
-    if (hasMonaco) {
-      await monacoEditor.click({ timeout: ctx.config.timeoutMs, force: true, position: { x: 120, y: 40 } }).catch(() => undefined);
-      await monacoInput.focus().catch(() => undefined);
-      await ctx.page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-      await ctx.page.keyboard.press("Backspace");
-      const pasted = writeSystemClipboardText(payload);
-      if (pasted) {
-        await ctx.page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
-      } else {
-        await ctx.page.keyboard.insertText(payload);
-      }
-    } else {
-      await editor.click({ timeout: ctx.config.timeoutMs });
-      try {
-        await editor.fill(payload, { timeout: ctx.config.timeoutMs });
-      } catch {
-        await ctx.page.keyboard.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-        await ctx.page.keyboard.press("Backspace");
-        await ctx.page.keyboard.insertText(payload);
-      }
-    }
-  }
-
-  await ctx.page.keyboard.press("Escape").catch(() => undefined);
-  const submit = await clickByCandidates(
-    formRoot,
-    ["下一步，确认新增权限", "确认新增权限", "下一步", "导入", "确认", "确定"],
-    ctx.config.timeoutMs,
-    ctx.logger
-  );
-  if (!submit) {
-    await manualTakeover(ctx, "确认权限导入", [
-      "请手动点击导入确认按钮。",
-      "等待页面出现导入成功提示后再继续。"
-    ]);
-  }
-
-  let success = await waitForAnyText(ctx.page, ["导入成功", "已导入", "权限已更新", "导入完成"], ctx.config.timeoutMs);
-  if (!success) {
-    await ctx.page.keyboard.press("Escape").catch(() => undefined);
-    const applySubmit = await clickByCandidates(formRoot, ["申请开通"], Math.min(ctx.config.timeoutMs, 8000), ctx.logger);
-    if (applySubmit) {
-      await clickByCandidates(ctx.page, ["确认开启", "开启"], Math.min(ctx.config.timeoutMs, 5000), ctx.logger);
-      success = await waitForAnyText(
-        ctx.page,
-        ["确认开启成功", "开启成功", "申请开通成功", "申请已提交", "提交成功", "导入成功", "已导入", "权限已更新", "导入完成"],
-        ctx.config.timeoutMs
-      );
-    }
-  }
-  if (!success) {
-    ctx.logger.warn("未检测到明确的权限导入成功提示，请人工确认。");
-  }
-
-  ctx.result.permissionsImported = true;
-}
-
 async function importPermissionsV2(ctx: StepContext): Promise<void> {
   if (ctx.result.appId) {
     const authUrl = `https://open.feishu.cn/app/${ctx.result.appId}/auth`;
@@ -2222,20 +2104,44 @@ async function importPermissionsV2(ctx: StepContext): Promise<void> {
 
   await waitForAnyText(ctx.page, ["\u6279\u91cf\u5bfc\u5165", "\u6743\u9650\u7ba1\u7406", "\u5bfc\u5165\u6743\u9650"], ctx.config.timeoutMs);
 
+  let wizardOpened = false;
   const importButton = await waitForEnabledAction(
     ctx.page,
     ["\u6279\u91cf\u5bfc\u5165/\u5bfc\u51fa\u6743\u9650", "\u6279\u91cf\u5bfc\u5165", "\u5bfc\u5165\u6743\u9650", "\u5bfc\u5165"],
     ctx.config.timeoutMs
   );
-  if (!importButton) {
-    await manualTakeover(ctx, "\u6253\u5f00\u6279\u91cf\u5bfc\u5165\u5f39\u7a97", [
-      "\u8bf7\u624b\u52a8\u70b9\u51fb\u201c\u6279\u91cf\u5bfc\u5165\u201d\u6309\u94ae\uff0c\u6253\u5f00\u6743\u9650\u5bfc\u5165\u5f39\u7a97\u3002",
-      "\u5f39\u7a97\u51fa\u73b0\u540e\u4e0d\u8981\u5173\u95ed\u6d4f\u89c8\u5668\u3002"
-    ]);
-  } else {
+  if (importButton) {
     await importButton.locator.scrollIntoViewIfNeeded().catch(() => undefined);
     await importButton.locator.click({ timeout: ctx.config.timeoutMs, force: true });
     ctx.logger.debug(`\u5df2\u70b9\u51fb\u6743\u9650\u5bfc\u5165\u5165\u53e3\uff1a${importButton.text}`);
+    wizardOpened = true;
+  } else {
+    // 2026-09 \u7248 UI\uff1a\u5165\u53e3\u6309\u94ae\u66f4\u540d\u300c\u6279\u91cf\u5904\u7406\u300d\uff0c\u300c\u6279\u91cf\u5bfc\u5165/\u5bfc\u51fa\u6743\u9650\u300d\u85cf\u5728\u5176\u4e0b\u62c9\u83dc\u5355\u91cc\uff0c
+    // \u65e7\u5019\u9009\u5728\u4e0b\u62c9\u672a\u5c55\u5f00\u65f6\u5168\u90e8\u843d\u7a7a\uff08\u6743\u9650\u5217\u8868\u975e\u7a7a\u65f6\u9875\u9762\u4e5f\u65e0\u4efb\u4f55\u542b\u300c\u5bfc\u5165\u300d\u7684\u53ef\u70b9\u5143\u7d20\uff09\u3002
+    const batchEntry = await waitForEnabledAction(ctx.page, ["\u6279\u91cf\u5904\u7406"], Math.min(ctx.config.timeoutMs, 8000));
+    if (batchEntry) {
+      await batchEntry.locator.click({ timeout: ctx.config.timeoutMs, force: true });
+      ctx.logger.debug("\u5df2\u70b9\u51fb\u300c\u6279\u91cf\u5904\u7406\u300d\u6309\u94ae\u3002");
+      const menuItem = await firstVisibleLocator(
+        [
+          ctx.page.getByRole("menuitem", { name: /\u6279\u91cf\u5bfc\u5165/ }),
+          ctx.page.locator("li:visible", { hasText: "\u6279\u91cf\u5bfc\u5165/\u5bfc\u51fa\u6743\u9650" }),
+          ctx.page.locator("[class*='menu'] li:visible", { hasText: "\u5bfc\u5165" }).first()
+        ],
+        8000
+      );
+      if (menuItem) {
+        await menuItem.click({ timeout: 8000, force: true });
+        ctx.logger.info("\u5df2\u901a\u8fc7\u300c\u6279\u91cf\u5904\u7406\u300d\u4e0b\u62c9\u6253\u5f00\u6279\u91cf\u5bfc\u5165\u3002");
+        wizardOpened = true;
+      }
+    }
+  }
+  if (!wizardOpened) {
+    await manualTakeover(ctx, "\u6253\u5f00\u6279\u91cf\u5bfc\u5165\u5f39\u7a97", [
+      "\u8bf7\u624b\u52a8\u70b9\u51fb\u201c\u6279\u91cf\u5904\u7406\u201d\u83dc\u5355\u4e2d\u7684\u201c\u6279\u91cf\u5bfc\u5165/\u5bfc\u51fa\u6743\u9650\u201d\u3002",
+      "\u5f39\u7a97\u51fa\u73b0\u540e\u4e0d\u8981\u5173\u95ed\u6d4f\u89c8\u5668\u3002"
+    ]);
   }
 
   const modal = await findVisibleModal(ctx.page, Math.min(ctx.config.timeoutMs, 5000));
@@ -2336,31 +2242,37 @@ async function importPermissionsV2(ctx: StepContext): Promise<void> {
   await clickStageButton(["\u4e0b\u4e00\u6b65\uff0c\u914d\u7f6e\u53ef\u8bbf\u95ee\u6570\u636e\u8303\u56f4"], "modal");
   await ctx.page.waitForTimeout(1500);
 
-  // \u7b2c\u4e09\u6bb5\uff1a\u786e\u5b9a\u5f00\u901a\uff08\u5bb9\u5668\u5df2\u53d8\uff0c\u9875\u9762\u7ea7\u641c\u7d22\u53ef\u89c1\u6309\u94ae\uff09
-  const finalClick = await clickStageButton(["\u786e\u5b9a\u5f00\u901a", "\u786e\u8ba4\u5f00\u901a", "\u7533\u8bf7\u5f00\u901a", "\u786e\u8ba4", "\u786e\u5b9a"], "page");
+  // \u7b2c\u4e09\u6bb5\uff1a\u786e\u5b9a\u5f00\u901a\uff08\u5bb9\u5668\u5df2\u53d8\uff0c\u9875\u9762\u7ea7\u641c\u7d22\u53ef\u89c1\u6309\u94ae\uff09\u3002
+  // \u5019\u9009\u53ea\u4fdd\u7559\u7cbe\u786e\u6587\u6848\uff1a\u901a\u7528\u300c\u786e\u8ba4\u300d\u300c\u786e\u5b9a\u300d\u4f1a\u901a\u8fc7 getByText \u547d\u4e2d\u65e0\u5173\u6587\u672c\uff0c
+  // force \u70b9\u51fb\u65e0\u6548\u679c\uff0c\u5411\u5bfc\u505c\u5728\u534a\u8def\u9020\u6210\u201c\u6b65\u9aa4\u5b8c\u6210\u4f46\u96f6\u6743\u9650\u843d\u5730\u201d\u7684\u9759\u9ed8\u5931\u8d25\u3002
+  const finalClick = await clickStageButton(["\u786e\u5b9a\u5f00\u901a", "\u786e\u8ba4\u5f00\u901a", "\u7533\u8bf7\u5f00\u901a"], "page");
   if (!finalClick) {
-    ctx.logger.warn("\u672a\u627e\u5230\u201c\u786e\u5b9a\u5f00\u901a\u201d\u7c7b\u6309\u94ae\uff0c\u6743\u9650\u53ef\u80fd\u5df2\u5728\u6b64\u524d\u751f\u6548\u3002");
+    await manualTakeover(ctx, "\u786e\u8ba4\u6743\u9650\u5bfc\u5165", [
+      "\u8bf7\u624b\u52a8\u70b9\u51fb\u201c\u786e\u5b9a\u5f00\u901a\u201d\u5b8c\u6210\u6743\u9650\u5bfc\u5165\u3002",
+      "\u5f00\u901a\u5b8c\u6210\u540e\u518d\u7ee7\u7eed\u3002"
+    ]);
   }
   await ctx.page.waitForTimeout(2500);
 
-  let success = await waitForAnyText(
-    ctx.page,
-    ["\u5f00\u901a\u6210\u529f", "\u5bfc\u5165\u6210\u529f", "\u5df2\u5bfc\u5165", "\u6743\u9650\u5df2\u66f4\u65b0", "\u5bfc\u5165\u5b8c\u6210"],
-    Math.min(ctx.config.timeoutMs, 10000)
-  );
-  if (!success) {
-    // \u6743\u5a01\u6821\u9a8c\uff1a\u7a7a\u5217\u8868\u63d0\u793a\u6d88\u5931\u5373\u89c6\u4e3a\u5bfc\u5165\u751f\u6548\uff08\u6bd4\u6210\u529f toast \u66f4\u53ef\u9760\uff09
-    const stillEmpty = await waitForAnyText(ctx.page, ["\u6682\u672a\u5f00\u901a\u4efb\u4f55\u6743\u9650"], 3000);
-    if (!stillEmpty) {
-      success = "\u6743\u9650\u5217\u8868\u5df2\u66f4\u65b0";
-      ctx.logger.info("\u68c0\u6d4b\u5230\u6743\u9650\u5217\u8868\u5df2\u975e\u7a7a\uff0c\u5bfc\u5165\u89c6\u4e3a\u6210\u529f\u3002");
-    }
+  // \u786e\u5b9a\u5f00\u901a\u540e\u53ef\u80fd\u5f39\u51fa\u4e8c\u6b21\u786e\u8ba4\uff08\u98ce\u9669\u63d0\u793a\u7b49\uff09\uff0c\u53ea\u5728\u53ef\u89c1\u5f39\u7a97\u5185\u5904\u7406\uff0c\u6700\u591a\u4e24\u8f6e
+  for (let round = 0; round < 2; round += 1) {
+    const dlg = await findVisibleModal(ctx.page, 2000).catch(() => null);
+    if (!dlg) break;
+    const act = await waitForEnabledAction(dlg, ["\u786e\u8ba4", "\u786e\u5b9a", "\u7ee7\u7eed\u5f00\u901a", "\u7533\u8bf7\u5f00\u901a"], 4000);
+    if (!act) break;
+    await act.locator.click({ force: true, timeout: 8000 });
+    ctx.logger.info(`\u6743\u9650\u5bfc\u5165\u4e8c\u6b21\u5f39\u7a97\u5df2\u786e\u8ba4\uff1a${act.text}`);
+    await ctx.page.waitForTimeout(1500);
   }
 
-  if (!success) {
-    ctx.logger.warn("\u672a\u68c0\u6d4b\u5230\u660e\u786e\u7684\u6743\u9650\u5bfc\u5165\u6210\u529f\u63d0\u793a\uff0c\u8bf7\u4eba\u5de5\u786e\u8ba4\u3002");
+  // \u786c\u6821\u9a8c\uff1a\u56de\u5230\u6743\u9650\u9875\u786e\u8ba4\u5173\u952e scope \u5df2\u751f\u6548\uff0c\u675c\u7edd toast \u731c\u6d4b\u3002
+  // \u5386\u53f2\u6559\u8bad\uff1a\u4e09\u6bb5\u6309\u94ae\u5168\u90e8\u70b9\u8fc7\u540e\u4ecd\u53ef\u80fd\u96f6\u6743\u9650\u843d\u5730\uff0c\u5f53\u65f6\u53ea\u62a5 WARN \u7ee7\u7eed\u8dd1\uff0c
+  // \u5e94\u7528\u4ea4\u4ed8\u540e\u673a\u5668\u4eba\u6536\u53d1\u5168\u90e8\u5931\u8d25\uff08\u7f3a im:message:send_as_bot\uff09\u3002
+  const permCheck = await verifyPermissionsLive(ctx);
+  if (!permCheck.ok) {
+    throw new Error(`\u6743\u9650\u5bfc\u5165\u540e\u7ebf\u4e0a\u6821\u9a8c\u672a\u901a\u8fc7\uff1a${permCheck.detail}`);
   }
-
+  ctx.logger.info("\u6743\u9650\u5bfc\u5165\u540e\u7ebf\u4e0a\u6821\u9a8c\u901a\u8fc7\uff1a\u5173\u952e\u6743\u9650\u5df2\u751f\u6548\u3002");
   ctx.result.permissionsImported = true;
 }
 async function enableBotCapability(ctx: StepContext): Promise<void> {
@@ -2397,15 +2309,38 @@ async function enableBotCapability(ctx: StepContext): Promise<void> {
 // result.json 里的 permissionsImported / eventSubscriptionConfigured 只是历史快照，
 // 后台任何手动改动都不会使其失效。跳过决策必须基于当前线上状态，而不是缓存标志。
 
+// 机器人收发消息的最小权限集：发送回复 + 接收单聊。
+// 权限页 body 文本会包含已开通 scope 的 ID，可据此做线上硬校验。
+const REQUIRED_PERMISSION_SCOPES = ["im:message:send_as_bot", "im:message.p2p_msg:readonly"];
+
 async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; detail: string }> {
   if (!ctx.result.appId) return { ok: false, detail: "无 App ID" };
   try {
+    // 权限页列表是虚拟渲染，DOM 文本只含首屏约 8 条，读 body 会漏掉 im:* 产生假阴性；
+    // 页面数据来自 /developers/v1/scope/applied/{appId}，以该接口的完整 JSON 为准。
     const url = `https://open.feishu.cn/app/${ctx.result.appId}/auth`;
+    const appliedUrl = `https://open.feishu.cn/developers/v1/scope/applied/${ctx.result.appId}`;
+    const responsePromise = ctx.page
+      .waitForResponse((r) => r.url().startsWith(appliedUrl), { timeout: ctx.config.timeoutMs })
+      .catch(() => null);
     await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
-    await ctx.page.waitForTimeout(4000);
-    const body = await ctx.page.locator("body").innerText().catch(() => "");
-    const empty = body.includes("暂未开通任何权限");
-    return { ok: !empty, detail: empty ? "权限列表为空（暂未开通任何权限）" : "" };
+    const res = await responsePromise;
+    await ctx.page.waitForTimeout(2500);
+    if (!res) return { ok: false, detail: "未能捕获权限列表接口响应" };
+    const json = (await res.json().catch(() => null)) as {
+      data?: { scopes?: Array<{ name?: string; status?: number }> };
+    } | null;
+    const scopes = json?.data?.scopes ?? [];
+    if (scopes.length === 0) return { ok: false, detail: "权限列表为空（暂未开通任何权限）" };
+    // 只查“非空”会被单条自动赠予的权限蒙混过关：
+    // 事件订阅弹窗会自动开通 im:message.p2p_msg:readonly，批量导入若全军覆没，
+    // 列表非空但发送权限缺失，重跑也会跳过导入，机器人永远无法回复。
+    const enabled = new Set(scopes.filter((s) => s.status === 5).map((s) => String(s.name ?? "")));
+    const missing = REQUIRED_PERMISSION_SCOPES.filter((s) => !enabled.has(s));
+    if (missing.length > 0) {
+      return { ok: false, detail: `缺少关键权限：${missing.join("、")}` };
+    }
+    return { ok: true, detail: "" };
   } catch (e) {
     return { ok: false, detail: `权限页无法打开：${e}` };
   }
@@ -2483,7 +2418,7 @@ async function verifyEventSubscriptionLive(ctx: StepContext): Promise<{ ok: bool
 }
 
 async function configureEventSubscription(ctx: StepContext): Promise<void> {
-  await waitForLocalClawOnline(ctx);
+  await waitForLocalServiceOnline(ctx);
 
   ctx.logger.info("正在点击页面左侧“事件与回调 / 事件订阅”菜单...");
   const clicked = await clickByCandidates(ctx.page, ["事件与回调", "事件订阅"], ctx.config.timeoutMs, ctx.logger);
@@ -2923,7 +2858,7 @@ async function main(): Promise<void> {
     await persistResult(config, ctx.result);
     logger.info(`结果文件已写入：${config.resultPath}`);
     logger.info(`App Secret 已掩码显示：${ctx.result.maskedSecret ?? "未获取"}`);
-    logger.info("交付完成：.env 已写入飞书凭据，结果 JSON 未保存 Secret，可启动本地 claw 并在飞书测试机器人。");
+    logger.info("交付完成：.env 已写入飞书凭据，结果 JSON 未保存 Secret，可启动本地 MyCodex 服务并在飞书测试机器人。");
   } catch (error) {
     if (error instanceof AutomationStepError) {
       output.write(`\n失败步骤：${error.step}\n`);

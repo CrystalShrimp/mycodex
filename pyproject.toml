@@ -20,9 +20,6 @@ dev = [
     "ruff>=0.6.0",
 ]
 
-[tool.ruff]
-extend-exclude = ["scripts/feishu_bot/chrome_profile"]
-
 [tool.ruff.lint]
 # Only fatal symbol bugs — runtime NameError / UnboundLocalError / redefinition.
 # Stylistic rules intentionally omitted to keep signal-to-noise high.
