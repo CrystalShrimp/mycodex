@@ -4,7 +4,7 @@ import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const APP = "cli_aad73a05bfb99d05";
+const APP = "cli_aa23fc213e389bc6";
 const ROOT = process.cwd();
 const userDataDir = path.join(ROOT, "artifacts", "feishu-user-data");
 const outDir = path.join(ROOT, "artifacts", "appcheck");
@@ -15,6 +15,8 @@ const PAGES = [
   ["version", `https://open.feishu.cn/app/${APP}/version`],
   ["bot", `https://open.feishu.cn/app/${APP}/bot`],
   ["baseinfo", `https://open.feishu.cn/app/${APP}/baseinfo`],
+  ["security", `https://open.feishu.cn/app/${APP}/security`],
+  ["availability", `https://open.feishu.cn/app/${APP}/availability`],
 ];
 
 const ctx = await chromium.launchPersistentContext(userDataDir, {
