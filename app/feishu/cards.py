@@ -1,5 +1,41 @@
 from __future__ import annotations
 
+# ===== 群聊卡片来源标记 =====
+
+# 实测飞书卡片回调（WS CARD 帧）不携带 context.open_chat_id，回调侧无法
+# 得知卡片在哪个会话。因此发送群聊卡片时把 chat_id 注入每个交互元素的
+# value，回调凭此标记路由（见 events.on_card_action）。
+CARD_CHAT_KEY = "_chat"
+
+_INTERACTIVE_TAGS = {
+    "button", "select_static", "select_dynamic", "select_person",
+    "multi_select_static", "multi_select_dynamic", "checkbox",
+    "datepicker", "time_picker", "input", "textarea", "overflow",
+}
+
+
+def stamp_card_chat(card: dict, chat_id: str) -> dict:
+    """给卡片内所有交互元素的 value dict 打上来源群 chat_id 标记。
+
+    select options 的字符串 value 不动（回调以 action.option 原样返回）。
+    """
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            if node.get("tag") in _INTERACTIVE_TAGS:
+                v = node.get("value")
+                if isinstance(v, dict):
+                    v.setdefault(CARD_CHAT_KEY, chat_id)
+                elif v is None:
+                    node["value"] = {CARD_CHAT_KEY: chat_id}
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+    walk(card)
+    return card
+
+
 GROUP_MARK = "【群聊】"
 
 

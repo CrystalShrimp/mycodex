@@ -1,6 +1,6 @@
 """Codex CLI subprocess manager — per-message exec with native threads.
 
-Each Feishu message spawns one ``codex exec --json`` process in the user's
+Each message spawns one ``codex exec --json`` process in the user's
 workspace. Multi-turn continuity relies on codex's own persisted sessions
 (~/.codex/sessions): when the session object carries a thread_id we respawn
 via ``codex exec resume <thread_id>``. Auth is inherited from the machine's
@@ -11,6 +11,9 @@ same code path works for fresh runs and `exec resume`):
     h → sandbox_mode=read-only                          (writes impossible)
     m → sandbox_mode=workspace-write + approval never   (workspace-scoped writes)
     l → --dangerously-bypass-approvals-and-sandbox      (full access)
+
+Progress display goes through the channel layer (ProgressSnap +
+ProgressHandle); this module is platform-agnostic.
 """
 from __future__ import annotations
 
@@ -27,19 +30,16 @@ from datetime import datetime
 from pathlib import Path
 
 from config.settings import settings
-from app.feishu.cards import (
-    build_progress_card,
-    build_error_card,
-    mark_group_card,
-)
-from app.feishu.client import feishu_client
+from app.channel.base import ProgressSnap, UserTarget
+from app.channel.registry import get_channel
 from app.models.schemas import AgentResult, ToolCallRecord
 from app.audit.logger import audit_logger
 from app.agent.codex_sessions import latest_thread_for_workspace
+from app.dispatch.sessions import skey_for
 
 logger = logging.getLogger("mycodex.cli_loop")
 
-# Map codex_thread_id -> {open_id, approval_mode}
+# Map codex_thread_id -> {target, approval_mode}
 session_registry: dict[str, dict] = {}
 
 
@@ -103,22 +103,16 @@ _ITEM_TOOL_NAMES = {
 
 
 class CodexCLILoop:
-    """Manage one ``codex exec`` process per in-flight message per user.
+    """Manage one ``codex exec`` process per in-flight message per session key.
 
-    Per-user asyncio.Lock serializes whole message executions: a follow-up
-    message sent while a task runs simply waits, mirroring the old
-    long-lived-stdin queue. Reader task resolves the message future on
-    ``turn.completed`` / ``turn.failed`` / process exit.
+    Per-key asyncio.Lock serializes whole message executions: a follow-up
+    message sent while a task runs simply waits. Reader task resolves the
+    message future on ``turn.completed`` / ``turn.failed`` / process exit.
     """
 
     def __init__(self) -> None:
         self._processes: dict[str, asyncio.subprocess.Process] = {}
-        # open_id -> 群聊 chat_id（空 = 私聊）。崩溃告警等后续发送用它路由。
-        self._chat_targets: dict[str, str] = {}
-        # 会话 key -> 真实 open_id。key 是"群=chat_id / 私聊=p_open_id"（私聊与
-        # 群聊进程/记忆完全隔离），但进度卡片、崩溃私聊告警、registry 仍要发给
-        # 真实的 open_id，查这张表还原。
-        self._owners: dict[str, str] = {}
+        self._targets: dict[str, UserTarget] = {}
         self._exec_locks: dict[str, asyncio.Lock] = {}
         self._reader_tasks: dict[str, asyncio.Task] = {}
         self._last_error: str = ""
@@ -127,11 +121,11 @@ class CodexCLILoop:
 
     # ---- public API ----
 
-    def get_last_result(self, open_id: str) -> AgentResult | None:
-        return self._last_results.get(open_id)
+    def get_last_result(self, user_id: str) -> AgentResult | None:
+        return self._last_results.get(user_id)
 
-    def get_task_result(self, open_id: str, task_id: str) -> AgentResult | None:
-        user_history = self._task_history.get(open_id, {})
+    def get_task_result(self, user_id: str, task_id: str) -> AgentResult | None:
+        user_history = self._task_history.get(user_id, {})
         if task_id in user_history:
             return user_history[task_id]
         for history in self._task_history.values():
@@ -139,37 +133,29 @@ class CodexCLILoop:
                 return history[task_id]
         return None
 
-    def is_running(self, open_id: str) -> bool:
-        """True while a codex exec process is alive for this user."""
-        proc = self._processes.get(open_id)
+    def is_running(self, skey: str) -> bool:
+        """True while a codex exec process is alive for this session key."""
+        proc = self._processes.get(skey)
         return proc is not None and proc.returncode is None
 
-    def get_thread_id_for_user(self, open_id: str) -> str | None:
-        # registry 里存的是真实 open_id；入参可能是会话 key，两边都试。
-        owner = self._owners.get(open_id, open_id)
+    def get_thread_id_for_user(self, user_id: str) -> str | None:
         for thread_id, info in session_registry.items():
-            if info.get("open_id") in (open_id, owner):
+            if info.get("target").user_id == user_id:
                 return thread_id
         return None
 
     async def send_and_wait(
         self,
         prompt: str,
-        open_id: str,
+        target: UserTarget,
         workspace: str,
         model: str | None = None,
         approval_mode: str = "m",
         effort: str = "",
         codex_thread_id: str | None = None,
         resume_thread_id: str | None = None,
-        chat_id: str = "",
-        owner_open_id: str = "",
     ) -> AgentResult:
         """Spawn codex exec for one message and wait for the turn to finish.
-
-        *open_id* 在这里是“会话 key”（群=chat_id / 私聊=p_open_id），私聊与
-        群聊各起各的进程互不串台；*owner_open_id* 是真实 open_id，用于把
-        进度卡片 / 崩溃告警发到用户私聊。
 
         Thread handling:
         - *resume_thread_id* → ``codex exec resume <id>``  (explicit /resume)
@@ -177,11 +163,12 @@ class CodexCLILoop:
         - "__continue__"     → resolve newest thread in workspace, else fresh
         - neither            → fresh thread
         """
-        lock = self._exec_locks.setdefault(open_id, asyncio.Lock())
+        skey = skey_for(target)
+        lock = self._exec_locks.setdefault(skey, asyncio.Lock())
         async with lock:
             # A previous process may still be registered after a crash exit;
             # make sure stale state is gone before spawning.
-            old = self._processes.pop(open_id, None)
+            old = self._processes.pop(skey, None)
             if old is not None and old.returncode is None:
                 _kill_process_tree(old)
 
@@ -205,7 +192,7 @@ class CodexCLILoop:
 
             try:
                 proc, stdin_writer = await self._spawn(
-                    open_id, workspace, chosen, approval_mode, effort,
+                    target, workspace, chosen, approval_mode, effort,
                     effective_thread, prompt,
                 )
             except FileNotFoundError as exc:
@@ -219,45 +206,36 @@ class CodexCLILoop:
                 return self._error_result(prompt, str(exc))
             except Exception as exc:
                 # Spawn-time failures must never be silent — the user would
-                # see nothing at all (no progress card exists yet).
+                # see nothing at all (no progress view exists yet).
                 logger.exception("Codex spawn failed unexpectedly")
                 return self._error_result(
                     prompt, f"启动 Codex 失败: {type(exc).__name__}: {exc}",
                 )
 
-            self._chat_targets[open_id] = chat_id
-            self._owners[open_id] = owner_open_id or open_id
+            self._targets[skey] = target
 
             msg_state = {
-                "card_id": "",
+                "progress": None,
                 "model": chosen,
                 "step": 0,
                 "tool_counts": {},
                 "warnings": 0,
                 "last_warning": "",
                 "started_at": asyncio.get_event_loop().time(),
-                "last_patch_at": 0.0,
                 "current_tool": "",
                 "current_tool_args": "",
                 "current_text": "",
                 "last_text": "",
                 "tools": [],
-                "is_group": bool(chat_id),  # 群任务进度卡标题带【群聊】标记
             }
 
             try:
-                card = build_progress_card(
-                    self._model_label(chosen, effort), "running",
+                channel = get_channel(target.platform)
+                msg_state["progress"] = await channel.open_progress(
+                    target, ProgressSnap(model=chosen, status="running"),
                 )
-                if chat_id:
-                    mark_group_card(card)
-                if chat_id:
-                    card_msg = await feishu_client.send_card(chat_id, card, is_chat=True)
-                else:
-                    card_msg = await feishu_client.send_card(self._owners[open_id], card)
-                msg_state["card_id"] = card_msg.get("data", {}).get("message_id", "")
             except Exception as e:
-                logger.warning("Failed to create progress card: %s", e)
+                logger.warning("Failed to open progress view: %s", e)
 
             future: asyncio.Future[AgentResult] = asyncio.get_event_loop().create_future()
 
@@ -268,22 +246,21 @@ class CodexCLILoop:
                 await stdin_writer.drain()
                 stdin_writer.close()
             except (ConnectionResetError, BrokenPipeError, OSError) as exc:
-                logger.warning("Stdin writer broken for open_id %s: %s", open_id, exc)
+                logger.warning("Stdin writer broken for %s: %s", skey, exc)
                 _kill_process_tree(proc)
                 return self._error_result(prompt, f"进程通信中断 ({type(exc).__name__}): {exc}")
 
             task = asyncio.create_task(
-                self._read_loop(open_id, proc, approval_mode, future, msg_state),
+                self._read_loop(target, proc, approval_mode, future, msg_state),
             )
-            self._reader_tasks[open_id] = task
+            self._reader_tasks[skey] = task
 
         return await future
 
-    def cancel_by_user(self, open_id: str) -> bool:
-        """Kill the running process for a user (synchronous)."""
-        proc = self._processes.pop(open_id, None)
-        task = self._reader_tasks.pop(open_id, None)
-        self._owners.pop(open_id, None)
+    def cancel_by_user(self, skey: str) -> bool:
+        """Kill the running process for a session key (synchronous)."""
+        proc = self._processes.pop(skey, None)
+        task = self._reader_tasks.pop(skey, None)
         if task and not task.done():
             task.cancel()
         if proc and proc.returncode is None:
@@ -291,8 +268,8 @@ class CodexCLILoop:
             return True
         return False
 
-    async def cancel_and_wait(self, open_id: str) -> bool:
-        cancelled = self.cancel_by_user(open_id)
+    async def cancel_and_wait(self, skey: str) -> bool:
+        cancelled = self.cancel_by_user(skey)
         await asyncio.sleep(0.3)
         return cancelled
 
@@ -303,7 +280,7 @@ class CodexCLILoop:
         return f"{model} · {effort}" if effort else (model or "codex")
 
     async def _spawn(
-        self, open_id: str, workspace: str, model: str,
+        self, target: UserTarget, workspace: str, model: str,
         approval_mode: str, effort: str, thread_id: str, prompt: str,
     ) -> tuple[asyncio.subprocess.Process, asyncio.StreamWriter]:
         cli_path = settings.codex_cli_path
@@ -354,54 +331,49 @@ class CodexCLILoop:
             env=env,
             limit=10 * 1024 * 1024,
         )
-        self._processes[open_id] = proc
+        skey = skey_for(target)
+        self._processes[skey] = proc
         logger.warning(
-            "Codex exec started: open_id=%s workspace=%s model=%s effort=%s mode=%s thread=%s pid=%s",
-            open_id, workspace, model, effort, approval_mode, thread_id or "(new)", proc.pid,
+            "Codex exec started: skey=%s platform=%s workspace=%s model=%s effort=%s mode=%s thread=%s pid=%s",
+            skey, target.platform, workspace, model, effort, approval_mode,
+            thread_id or "(new)", proc.pid,
         )
         return proc, proc.stdin  # type: ignore[return-value]
 
-    async def _patch_progress(self, msg_state: dict, status: str) -> None:
-        """Rebuild the progress card from msg_state and PATCH it.
+    async def _push_progress(self, msg_state: dict, status: str, *, warning_event: bool = False) -> None:
+        """Feed a ProgressSnap to the channel's progress handle.
 
-        Best-effort: any Feishu API error is swallowed since a stale card is
-        preferable to killing the task. Throttled to 0.5s except transitions.
+        Best-effort: throttling and send errors are swallowed by the
+        ProgressHandle implementation.
         """
-        card_id = msg_state.get("card_id")
-        if not card_id:
+        progress = msg_state.get("progress")
+        if progress is None:
             return
-        now = asyncio.get_event_loop().time()
-        prev_status = msg_state.get("last_status")
-        if status == prev_status and now - msg_state.get("last_patch_at", 0) < 0.5:
-            return
+        elapsed = asyncio.get_event_loop().time() - msg_state.get("started_at", 0)
+        snap = ProgressSnap(
+            model=msg_state.get("model", ""),
+            status=status,
+            step=msg_state.get("step", 0),
+            tool_counts=msg_state.get("tool_counts", {}),
+            elapsed_s=elapsed,
+            warnings=msg_state.get("warnings", 0),
+            current_tool=msg_state.get("current_tool", ""),
+            current_tool_args=msg_state.get("current_tool_args", ""),
+            last_text=(msg_state.get("current_text") or msg_state.get("last_text", "")) if status == "running" else "",
+            last_warning=msg_state.get("last_warning", "") if status != "running" else "",
+            warning_event=warning_event,
+        )
         try:
-            elapsed = now - msg_state.get("started_at", now)
-            last_text = msg_state.get("current_text") or msg_state.get("last_text", "")
-            card = build_progress_card(
-                msg_state.get("model", ""),
-                status,
-                step=msg_state.get("step", 0),
-                tool_counts=msg_state.get("tool_counts", {}),
-                elapsed_s=elapsed,
-                warnings=msg_state.get("warnings", 0),
-                current_tool=msg_state.get("current_tool", ""),
-                current_tool_args=msg_state.get("current_tool_args", ""),
-                last_text=last_text if status == "running" else "",
-                last_warning=msg_state.get("last_warning", ""),
-            )
-            if msg_state.get("is_group"):
-                mark_group_card(card)
-            await feishu_client.update_card(card_id, card)
-            msg_state["last_patch_at"] = now
-            msg_state["last_status"] = status
+            await progress.update(snap)
         except Exception as e:
-            logger.debug("Progress card PATCH failed (non-fatal): %s", e)
+            logger.debug("Progress update failed (non-fatal): %s", e)
 
     async def _read_loop(
-        self, open_id: str, proc: asyncio.subprocess.Process,
+        self, target: UserTarget, proc: asyncio.subprocess.Process,
         approval_mode: str, future: asyncio.Future, msg_state: dict,
     ) -> None:
-        """Read JSONL events from stdout, patch progress, resolve the future."""
+        """Read JSONL events from stdout, push progress, resolve the future."""
+        skey = skey_for(target)
         stderr_lines: list[str] = []
         task_id = uuid.uuid4().hex[:12]
         resolved = False
@@ -418,9 +390,8 @@ class CodexCLILoop:
                 decoded = line.decode("utf-8", errors="replace").rstrip()
                 stderr_lines.append(decoded)
                 logger.debug("codex stderr: %s", decoded)
-                # Surface stderr warnings/errors on the progress card (e.g.
+                # Surface stderr warnings/errors on the progress view (e.g.
                 # codex's "failed to refresh available models" timeouts).
-                # Throttled to one card PATCH per 2s for spammy streams.
                 upper = decoded.upper()
                 if "ERROR" in upper or "WARN" in upper:
                     msg_state["warnings"] = msg_state.get("warnings", 0) + 1
@@ -428,10 +399,7 @@ class CodexCLILoop:
                     now = asyncio.get_event_loop().time()
                     if now - msg_state.get("last_warning_patch", 0) >= 2.0:
                         msg_state["last_warning_patch"] = now
-                        try:
-                            await self._patch_progress(msg_state, "running")
-                        except Exception:
-                            pass
+                        await self._push_progress(msg_state, "running", warning_event=True)
 
         stderr_task = asyncio.create_task(_drain_stderr())
 
@@ -464,13 +432,13 @@ class CodexCLILoop:
                     thread_id = event.get("thread_id", "")
                     if thread_id:
                         session_registry[thread_id] = {
-                            "open_id": self._owners.get(open_id, open_id),
+                            "target": target,
                             "approval_mode": approval_mode,
                         }
-                    await self._patch_progress(msg_state, "running")
+                    await self._push_progress(msg_state, "running")
 
                 elif etype == "turn.started":
-                    await self._patch_progress(msg_state, "running")
+                    await self._push_progress(msg_state, "running")
 
                 elif etype == "item.started":
                     item = event.get("item", {})
@@ -478,7 +446,7 @@ class CodexCLILoop:
                     if name:
                         msg_state["current_tool"] = name
                         msg_state["current_tool_args"] = _summarize_item_args(item) or "…"
-                        await self._patch_progress(msg_state, "running")
+                        await self._push_progress(msg_state, "running")
 
                 elif etype == "item.completed":
                     await self._handle_item(event.get("item", {}), msg_state)
@@ -500,7 +468,7 @@ class CodexCLILoop:
                         started_at=datetime.now(),
                         finished_at=datetime.now(),
                     )
-                    self._record_result(open_id, result, msg_state, "completed")
+                    self._record_result(target, result, msg_state, "completed")
                     _resolve(result)
 
                 elif etype == "turn.failed":
@@ -519,13 +487,13 @@ class CodexCLILoop:
                         started_at=datetime.now(),
                         finished_at=datetime.now(),
                     )
-                    self._record_result(open_id, result, msg_state, "failed")
+                    self._record_result(target, result, msg_state, "failed")
                     _resolve(result)
 
                 elif etype == "error":
                     msg_state["warnings"] += 1
                     msg_state["last_warning"] = str(event.get("message", ""))[:120]
-                    await self._patch_progress(msg_state, "running")
+                    await self._push_progress(msg_state, "running", warning_event=True)
 
                 else:
                     logger.debug("Unhandled codex event: %s", etype)
@@ -546,18 +514,16 @@ class CodexCLILoop:
                 result = self._error_result("", reason)
                 result.task_id = task_id
                 result.thread_id = thread_id
-                self._record_result(open_id, result, msg_state, "failed")
+                self._record_result(target, result, msg_state, "failed")
                 _resolve(result)
-                if msg_state.get("card_id"):
+                progress = msg_state.get("progress")
+                if progress is not None:
                     try:
-                        err_card = build_error_card("Codex CLI 已退出", reason[:3500])
-                        if msg_state.get("is_group"):
-                            mark_group_card(err_card)
-                        await feishu_client.update_card(msg_state["card_id"], err_card)
+                        await progress.error("Codex CLI 已退出", reason[:3500])
                     except Exception:
                         pass
 
-                crash_chat_id = self._chat_targets.get(open_id, "")
+                crash_target = self._targets.get(skey) or target
                 hint = (
                     "💡 自愈提示：您可以尝试发送 `/new` 重置会话，或发送 `/cd` 切换到其他可用工作区。"
                 )
@@ -567,20 +533,13 @@ class CodexCLILoop:
                     f"错误详情:\n```\n{reason[:1000]}\n```\n{hint}"
                 )
                 try:
-                    if crash_chat_id:
-                        asyncio.create_task(
-                            feishu_client.send_text(crash_chat_id, text, is_chat=True),
-                        )
-                    else:
-                        asyncio.create_task(
-                            feishu_client.send_text(self._owners.get(open_id, open_id), text)
-                        )
+                    await get_channel(crash_target.platform).send_text(crash_target, text)
                 except Exception:
                     pass
 
             logger.info(
-                "Codex exec exited: open_id=%s code=%s thread=%s",
-                open_id, exit_code, thread_id or "(none)",
+                "Codex exec exited: skey=%s code=%s thread=%s",
+                skey, exit_code, thread_id or "(none)",
             )
 
         except asyncio.CancelledError:
@@ -588,11 +547,11 @@ class CodexCLILoop:
             _resolve(self._error_result("", "process terminated", "cancelled"))
             await proc.wait()
         except Exception as exc:
-            logger.exception("Codex read loop error: open_id=%s", open_id)
+            logger.exception("Codex read loop error: skey=%s", skey)
             _resolve(self._error_result("", str(exc)))
         finally:
             stderr_task.cancel()
-            self._cleanup(open_id)
+            self._cleanup(skey)
 
     async def _handle_item(self, item: dict, msg_state: dict) -> None:
         itype = item.get("type", "")
@@ -608,7 +567,7 @@ class CodexCLILoop:
         if itype == "error":
             msg_state["warnings"] += 1
             msg_state["last_warning"] = (item.get("message") or "item error")[:120]
-            await self._patch_progress(msg_state, "running")
+            await self._push_progress(msg_state, "running", warning_event=True)
             return
 
         tool_name = _ITEM_TOOL_NAMES.get(itype)
@@ -632,39 +591,37 @@ class CodexCLILoop:
         msg_state.setdefault("tools", []).append(
             ToolCallRecord(tool_name=tool_name, arguments=arguments),
         )
-        await self._patch_progress(msg_state, "running")
+        await self._push_progress(msg_state, "running")
 
     def _record_result(
-        self, open_id: str, result: AgentResult, msg_state: dict, status: str,
+        self, target: UserTarget, result: AgentResult, msg_state: dict, status: str,
     ) -> None:
-        self._last_results[open_id] = result
-        user_history = self._task_history.setdefault(open_id, {})
+        self._last_results[target.user_id] = result
+        user_history = self._task_history.setdefault(target.user_id, {})
         user_history[result.task_id] = result
         if len(user_history) > 50:
             first_key = next(iter(user_history))
             user_history.pop(first_key, None)
 
-        card_id = msg_state.get("card_id")
-        if card_id:
+        progress = msg_state.get("progress")
+        if progress is not None:
+            elapsed = asyncio.get_event_loop().time() - msg_state.get("started_at", 0)
+            final_snap = ProgressSnap(
+                model=msg_state.get("model", result.model),
+                status=status,
+                step=msg_state.get("step", 0),
+                tool_counts=msg_state.get("tool_counts", {}),
+                elapsed_s=elapsed,
+                warnings=msg_state.get("warnings", 0),
+                result_text=result.text,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                error=result.error,
+                session_id=result.thread_id,
+                task_id=result.task_id,
+            )
             try:
-                elapsed = asyncio.get_event_loop().time() - msg_state.get("started_at", 0)
-                final_card = build_progress_card(
-                    msg_state.get("model", result.model),
-                    status,
-                    step=msg_state.get("step", 0),
-                    tool_counts=msg_state.get("tool_counts", {}),
-                    elapsed_s=elapsed,
-                    warnings=msg_state.get("warnings", 0),
-                    result_text=result.text,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    error=result.error,
-                    thread_id=result.thread_id,
-                    task_id=result.task_id,
-                )
-                if msg_state.get("is_group"):
-                    mark_group_card(final_card)
-                asyncio.create_task(feishu_client.update_card(card_id, final_card))
+                asyncio.create_task(progress.finish(final_snap))
             except Exception:
                 pass
 
@@ -680,10 +637,10 @@ class CodexCLILoop:
             result.task_id, status, result.duration_s, len(result.tools_used),
         )
 
-    def _cleanup(self, open_id: str) -> None:
-        self._processes.pop(open_id, None)
-        self._reader_tasks.pop(open_id, None)
-        self._owners.pop(open_id, None)
+    def _cleanup(self, skey: str) -> None:
+        self._processes.pop(skey, None)
+        self._reader_tasks.pop(skey, None)
+        self._targets.pop(skey, None)
 
     @staticmethod
     def _error_result(prompt: str, error: str, status: str = "failed") -> AgentResult:

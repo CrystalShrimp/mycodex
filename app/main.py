@@ -70,11 +70,12 @@ event_handler = (
 )
 
 ws_client: FeishuWsClient | None = None
+wecom_ws_client = None  # WeComWsClient（延迟导入，未启用时为 None）
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ws_client
+    global ws_client, wecom_ws_client
     workspace = Path(settings.get_default_workspace())
     if workspace.exists() and not workspace.is_dir():
         raise NotADirectoryError(
@@ -82,30 +83,65 @@ async def lifespan(app: FastAPI):
         )
     workspace.mkdir(parents=True, exist_ok=True)
 
-    logger.info("mycodex starting...")
+    enabled = settings.get_enabled_channels()
+    logger.info("mycodex starting... (channels: %s)", ",".join(enabled) or "(none)")
     logger.info("Default workspace: %s", workspace)
-    logger.info("Allowed users: %s", settings.get_allowed_users() or "(all)")
+    logger.info(
+        "Access mode: %s | Allowed users: %s | Allowed groups: %s",
+        settings.get_allowed_mode(),
+        settings.get_allowed_users() or "(all)",
+        settings.get_allowed_group_ids() or "(none)",
+    )
     logger.info("Codex CLI: %s", settings.codex_cli_path)
 
     # Start Feishu WebSocket long-connection
-    ws_client = create_ws_client(
-        app_id=settings.feishu_app_id,
-        app_secret=settings.feishu_app_secret,
-        event_handler=event_handler,
-    )
-    ws_client.start_async()
-    logger.info("Feishu WS client connecting...")
+    if "feishu" in enabled:
+        ws_client = create_ws_client(
+            app_id=settings.feishu_app_id,
+            app_secret=settings.feishu_app_secret,
+            event_handler=event_handler,
+        )
+        ws_client.start_async()
+        logger.info("Feishu WS client connecting...")
+    else:
+        logger.info("Feishu channel disabled (no credentials or CHANNELS override)")
 
     # 群聊"仅 @ 响应"门槛需要机器人自身 open_id 来比对 mentions
-    try:
-        if await feishu_client.fetch_bot_open_id():
-            logger.info("Group messages gated on @bot mention")
-        else:
-            logger.warning(
-                "Bot open_id unavailable; group @-gate falls back to any-mention check"
+    if "feishu" in enabled:
+        try:
+            if await feishu_client.fetch_bot_open_id():
+                logger.info("Group messages gated on @bot mention")
+            else:
+                logger.warning(
+                    "Bot open_id unavailable; group @-gate falls back to any-mention check"
+                )
+        except Exception as e:
+            logger.warning("Failed to fetch bot open_id: %s", e)
+
+    # Start WeCom smart-bot WebSocket long-connection
+    if "wecom" in enabled:
+        try:
+            from app.wecom.ws import WeComWsClient
+            from app.wecom.client import WeComClient
+            from app.wecom.channel import WeComChannel
+            from app.wecom import events as wecom_events
+            from app.channel.registry import register_channel
+
+            wecom_channel = WeComChannel()
+            wecom_ws_client = WeComWsClient(
+                settings.wecom_bot_id,
+                settings.wecom_secret,
+                on_message=wecom_events.on_wecom_message,
+                on_event=wecom_events.on_wecom_event,
             )
-    except Exception as e:
-        logger.warning("Failed to fetch bot open_id: %s", e)
+            wecom_channel.bind(wecom_ws_client, WeComClient(wecom_ws_client))
+            wecom_events.bind_channel(wecom_channel)
+            register_channel(wecom_channel)
+            wecom_ws_client.start()
+            logger.info("WeCom WS client connecting (bot=%s)...", settings.wecom_bot_id)
+        except Exception as e:
+            logger.error("Failed to start WeCom channel: %s", e)
+            wecom_ws_client = None
 
     # Models are discovered from the local codex login (models_cache.json).
     from app.profiles import discover_models
@@ -116,6 +152,11 @@ async def lifespan(app: FastAPI):
         logger.info("Available codex models: %s", list(models.keys()))
     yield
 
+    if wecom_ws_client is not None:
+        try:
+            await wecom_ws_client.stop()
+        except Exception as e:
+            logger.warning("WeCom WS stop error: %s", e)
     await feishu_client.close()
     logger.info("mycodex stopped.")
 
@@ -130,15 +171,26 @@ app = FastAPI(
 
 @app.get("/health")
 async def health():
-    info = {"status": "ok", "ws_connected": ws_client._conn is not None if ws_client else False}
+    feishu_connected = ws_client._conn is not None if ws_client else False
+    # ws_connected 保留为飞书状态（tray / auto_feishu 在线检测依赖此键）
+    info = {"status": "ok", "ws_connected": feishu_connected}
+
+    channels: dict = {}
     if ws_client:
-        info["ws_diagnostics"] = {
-            "msg_count": ws_client._msg_count,
-            "last_msg_time": ws_client._last_msg_time,
-            "last_msg_type": ws_client._last_msg_type,
-            "last_msg_error": ws_client._last_msg_error,
-            "dispatch_count": ws_client._dispatch_count,
+        channels["feishu"] = {
+            "connected": feishu_connected,
+            **{
+                "msg_count": ws_client._msg_count,
+                "last_msg_time": ws_client._last_msg_time,
+                "last_msg_type": ws_client._last_msg_type,
+                "last_msg_error": ws_client._last_msg_error,
+                "dispatch_count": ws_client._dispatch_count,
+            },
         }
+    if wecom_ws_client is not None:
+        channels["wecom"] = wecom_ws_client.health()
+    info["channels"] = channels
+
     from app.agent.cli_loop import codex_cli_loop
     info["cli_last_error"] = codex_cli_loop._last_error or "(none)"
     return info

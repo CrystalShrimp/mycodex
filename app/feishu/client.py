@@ -124,6 +124,50 @@ class FeishuClient:
             raise RuntimeError(f"send_card failed: code={data.get('code')} msg={data.get('msg')}")
         return data
 
+    async def list_group_members(self, chat_id: str) -> set[str] | None:
+        """拉取群成员 open_id 集合（分页）。失败返回 None（权限缺失/网络）。
+
+        API: GET /im/v1/chats/{chat_id}/members
+        需要应用开通"获取群成员列表"权限（im:chat 相关只读权限）并发布版本。
+        """
+        headers = await self._api_headers()
+        members: set[str] = set()
+        page_token = ""
+        for _ in range(50):  # 最多 50 页防死循环
+            params: dict = {"member_id_type": "open_id", "page_size": 100}
+            if page_token:
+                params["page_token"] = page_token
+            try:
+                resp = await self._http.get(
+                    f"{API_BASE}/im/v1/chats/{chat_id}/members",
+                    params=params,
+                    headers=headers,
+                )
+            except Exception as exc:
+                logger.error("list_group_members request failed: %s", exc)
+                return None
+            data = resp.json()
+            code = data.get("code")
+            if code == 99991663:
+                await self._refresh_token()
+                headers = await self._api_headers()
+                continue
+            if code != 0:
+                logger.error(
+                    "list_group_members failed: code=%s msg=%s "
+                    "（提示：groups 白名单模式需在飞书后台开通群成员读取权限并发布版本）",
+                    code, data.get("msg"),
+                )
+                return None
+            for item in data.get("data", {}).get("items", []):
+                mid = item.get("member_id", "")
+                if mid:
+                    members.add(mid)
+            if not data.get("data", {}).get("has_more"):
+                return members
+            page_token = data.get("data", {}).get("page_token", "")
+        return members
+
     async def upload_file(self, file_path: str | Path, file_type: str = "stream") -> str:
         """Upload a file to Feishu and return file_key.
 
