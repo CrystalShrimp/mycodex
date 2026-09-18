@@ -145,12 +145,14 @@ def list_workspace_threads(workspace: str) -> list[dict]:
     """
     if not workspace:
         return []
-    ws_resolved = str(Path(workspace).resolve()).replace("/", "\\").lower()
+    # os.path.normcase: Windows 下统一大小写与反斜杠；macOS/Linux 原样
+    # （同机写入的路径分隔与大小写一致，直接可比）。
+    ws_key = os.path.normcase(os.path.normpath(str(Path(workspace).resolve())))
     out: list[dict] = []
     for path in _iter_rollout_files():
         meta = _read_session_meta(path)
-        cwd = str(meta.get("cwd") or "").replace("/", "\\").lower()
-        if cwd != ws_resolved:
+        cwd = str(meta.get("cwd") or "")
+        if not cwd or os.path.normcase(os.path.normpath(cwd)) != ws_key:
             continue
         thread_id = meta.get("session_id") or _thread_id_from_name(path)
         messages = iter_thread_messages(thread_id)

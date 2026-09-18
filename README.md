@@ -12,12 +12,24 @@
 
 ## 快速开始
 
+**Windows**
 1. **前置**：终端运行 `codex login` 完成 ChatGPT 账号登录（键入 `codex` 能启动即具备条件）；
 2. **首次配置飞书机器人**：进入 `auto_feishu/` 目录运行 `setup.cmd`，按提示完成一次飞书账号登录即可（详见 [auto_feishu/README.md](auto_feishu/README.md)）；
 3. **启动服务**：双击项目根目录的 `MyCodex.bat`，任务栏出现托盘图标即表示启动成功；
 4. **在飞书中发消息**给机器人，按引导完成模型、推理强度和执行模式配置后即可使用。
 
-代码或配置更新后，使用 `MyCodex-Restart.bat` 重启。健康检查地址：`http://127.0.0.1:8090/health`。
+代码或配置更新后，使用 `MyCodex-Restart.bat` 重启。
+
+**macOS**
+```bash
+bash setup-mac.sh          # 一次性安装：uv 依赖、.env 模板、codex 检查
+open MyCodex.command       # 双击启动（停旧→后台起服务→健康检查）
+# 可选：
+bash scripts/setup_autostart_mac.sh                    # 开机自启 (launchd)
+.venv/bin/pip install rumps && .venv/bin/python scripts/menubar.py   # 菜单栏
+```
+
+健康检查地址：`http://127.0.0.1:8090/health`。
 
 ## 主要指令（飞书中发送）
 

@@ -199,6 +199,18 @@ async def health():
 if __name__ == "__main__":
     import sys
 
+    if sys.platform != "win32":
+        # macOS/Linux: asyncio 子进程依赖 child watcher；uvicorn 自建事件
+        # 循环时未必有默认 watcher，这里显式装一个（ThreadedChildWatcher
+        # 不挑事件循环实现）。失败不阻断启动（Python 版本行为有差异）。
+        try:
+            import asyncio
+            policy = asyncio.get_event_loop_policy()
+            if policy.get_child_watcher() is None:
+                policy.set_child_watcher(asyncio.ThreadedChildWatcher())
+        except Exception as e:
+            logger.debug("child watcher setup skipped: %s", e)
+
     dev_mode = "--dev" in sys.argv
     if dev_mode:
         logger.info("DEV mode: hot-reload enabled")
