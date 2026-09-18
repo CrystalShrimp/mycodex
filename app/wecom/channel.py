@@ -285,10 +285,15 @@ class WeComChannel:
             )
         elif kind == "session_selection":
             sessions: list = payload.get("sessions", [])
-            options = [
-                (s.get("thread_id", ""), f"`{s.get('thread_id', '')[:14]}…` {s.get('last_summary', '')} ({s.get('message_count', 0)}步)")
-                for s in sessions[:15]
-            ]
+            options = []
+            now = time.time()
+            for s in sessions[:15]:
+                mtime = s.get("mtime", 0)
+                try:
+                    ts = time.strftime("%m-%d %H:%M", time.localtime(mtime)) if mtime else "?"
+                except Exception:
+                    ts = "?"
+                options.append((s.get("thread_id", ""), f"{s.get('last_summary', '')} · {ts}"))
             _numbered("选择要恢复的会话", options, footer="或直接发送 `/resume <thread_id>`")
             await self._respond_or_push(
                 target, self._client.respond_markdown,

@@ -112,13 +112,21 @@ def build_effort_selection_card(
     approval_id: str = "",
     current_effort: str = "",
 ) -> dict:
-    """推理强度选择卡片 — low / medium / high。"""
+    """推理强度选择卡片 — 跟随官方五档。"""
     effort_desc = {
         "low": "Low (轻量/快速)",
         "medium": "Medium (标准/推荐)",
-        "high": "High (深度/最强)",
+        "high": "High (深度)",
+        "xhigh": "xHigh (更深)",
+        "max": "Max (最强)",
     }
-    order = [("low", "secondary"), ("medium", "primary"), ("high", "danger")]
+    order = [
+        ("low", "secondary"),
+        ("medium", "primary"),
+        ("high", "default"),
+        ("xhigh", "default"),
+        ("max", "danger"),
+    ]
     active = current_effort if current_effort in effort_desc else ""
 
     actions = []
@@ -761,7 +769,7 @@ def build_session_selection_card(
             else:
                 ago = f"{int(delta // 86400)}天前"
         marker = " · 当前" if (current_thread_id and tid == current_thread_id) else ""
-        label = f"{ts_str} ({ago}) · {msg_count}步 · {summary}{marker}"
+        label = f"{summary}{marker} · {ts_str} ({ago})"
         if len(label) > 100:
             label = label[:97] + "..."
         options.append({

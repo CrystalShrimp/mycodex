@@ -120,14 +120,17 @@ def mode_selection_card(approval_id: str, active_mode: str) -> dict:
 
 
 def effort_selection_card(approval_id: str, current_effort: str) -> dict:
-    labels = {"low": "⚡ low", "medium": "⚙️ medium", "high": "🧠 high"}
+    labels = {
+        "low": "⚡ low", "medium": "⚙️ medium", "high": "🧠 high",
+        "xhigh": "🔥 xhigh", "max": "🚀 max",
+    }
+    order = ["low", "medium", "high", "xhigh", "max"]
     return buttons_card(
         f"推理强度（当前: {current_effort or '未设置'}）",
         "点击切换推理强度",
         [
-            _btn("ef", "low", labels["low"], 1 if current_effort != "low" else 3, approval_id),
-            _btn("ef", "medium", labels["medium"], 1 if current_effort != "medium" else 3, approval_id),
-            _btn("ef", "high", labels["high"], 1 if current_effort != "high" else 3, approval_id),
+            _btn("ef", lv, labels[lv], 1 if current_effort != lv else 3, approval_id)
+            for lv in order
         ],
     )
 
