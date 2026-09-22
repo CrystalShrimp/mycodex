@@ -128,7 +128,7 @@ def main() -> int:
 
     if not app_id or not app_secret:
         print("❌ 未在 .env 中检测到有效的 FEISHU_APP_ID / FEISHU_APP_SECRET。")
-        print("   请先运行 setup.cmd 完成飞书基础自动化配置后再使用本工具。")
+        print("   请先运行 auto_feishu/setup.cmd 完成飞书基础自动化配置后再使用本工具。")
         return 1
 
     print("→ 正在连接飞书开放平台验证凭证...")
