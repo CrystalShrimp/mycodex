@@ -266,7 +266,7 @@ def test_allowed_users_platform_filter(monkeypatch):
 
 
 def test_enabled_channels_autodetect(monkeypatch):
-    monkeypatch.setattr(settings, "mycodex_channels", "", raising=False)
+    monkeypatch.setattr(settings, "channels", "", raising=False)
     monkeypatch.setattr(settings, "feishu_app_id", "cli_x", raising=False)
     monkeypatch.setattr(settings, "feishu_app_secret", "s", raising=False)
     monkeypatch.setattr(settings, "wecom_bot_id", "", raising=False)
@@ -274,5 +274,5 @@ def test_enabled_channels_autodetect(monkeypatch):
     monkeypatch.setattr(settings, "wecom_bot_id", "b", raising=False)
     monkeypatch.setattr(settings, "wecom_secret", "w", raising=False)
     assert settings.get_enabled_channels() == ["feishu", "wecom"]
-    monkeypatch.setattr(settings, "mycodex_channels", "wecom", raising=False)
+    monkeypatch.setattr(settings, "channels", "wecom", raising=False)
     assert settings.get_enabled_channels() == ["wecom"]

@@ -103,7 +103,6 @@ def handle_workspace_confirm(target: UserTarget, skey: str, target_path: str) ->
         session.codex_thread_id = "__continue__"  # 切换工作区后自动恢复该项目最新 Thread
         session_manager.save_session(session)
 
-    preferences_manager.clear(target.user_id)
     resolved_workspace = str(p.resolve())
     # 工作区严格属于当前会话（群聊/私聊各自独立），不再改写全局默认值
     codex_cli_loop.cancel_by_user(skey)
@@ -116,41 +115,26 @@ def handle_workspace_confirm(target: UserTarget, skey: str, target_path: str) ->
 
     action_msg = "已在新目录新建并切换" if is_new else "已切换"
 
+    pref = preferences_manager.get(target.user_id)
+    models = discover_models()
+    model_label = models.get(pref.model, {}).get("label", pref.model) or pref.model or "未设置"
+    mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
+    mode_label = mode_labels.get(pref.mode, pref.mode or "未设置")
+
     async def _followup() -> None:
         reply = ReplyContext(target)
         await asyncio.sleep(0.2)
-        await reply.text(f"📁 {action_msg}工作区：`{session.workspace}`{pred_text}")
-
-    asyncio.get_running_loop().create_task(_followup())
-
-    ws_config = preferences_manager.load_workspace_config(resolved_workspace)
-    if ws_config and ws_config.complete:
-        models = discover_models()
-        model_label = models.get(ws_config.model, {}).get("label", ws_config.model)
-
-        async def _reuse_card() -> None:
-            reply = ReplyContext(target)
-            await asyncio.sleep(0.2)
-            await reply.view(
-                "ws_config_reuse",
-                approval_id=uuid.uuid4().hex[:12],
-                workspace=resolved_workspace,
-                model_label=model_label,
-                effort=ws_config.level,
-                mode=ws_config.mode,
-                action_type="switch",
-            )
-
-        asyncio.get_running_loop().create_task(_reuse_card())
-    else:
-        # No reusable workspace config → preferences are now cleared.
-        # If a prompt was stashed by the first-run gate, re-enter _run_codex
-        # so the model/effort/mode setup views go out and the task
-        # auto-starts once they're complete. Without this the flow
-        # dead-ends silently after the workspace switch.
+        await reply.text(
+            f"📁 {action_msg}工作区：`{session.workspace}`{pred_text}\n"
+            f"⚙️ 当前配置：模型 `{model_label}` | 推理强度 `{pref.level or '未设置'}` | 审批模式 `{mode_label}`"
+        )
         if session and session.pending_prompt.strip():
             pending = session.pending_prompt.strip()
-            asyncio.get_running_loop().create_task(_run_codex(pending, target, session))
+            session.pending_prompt = ""
+            session_manager.save_session(session)
+            await _run_codex(pending, target, session)
+
+    asyncio.get_running_loop().create_task(_followup())
 
 
 def handle_workspace_cancel(target: UserTarget) -> None:

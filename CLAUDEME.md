@@ -145,7 +145,7 @@ codex login           # 未登录时执行，浏览器 ChatGPT 授权
 ### 5.2 切换模型 / 档位
 
 - 飞书发 `/model`（或 `/model gpt-5.6-luna`）：弹模型选择卡片 / 直接切换
-- 飞书发 `/level` 或 `/effort`：切推理强度 `low / medium / high / xhigh / max`
+- 飞书发 `/effort`：切推理强度 `low / medium / high / xhigh / max`
 - 兜底模型：`.env` 的 `CODEX_DEFAULT_MODEL`（留空用内置列表第一个）
 
 ### 5.3 历史遗留说明

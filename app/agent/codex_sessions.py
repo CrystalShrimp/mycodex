@@ -196,3 +196,50 @@ def find_all_codex_workspaces() -> list[str]:
         resolved = str(p.resolve())
         workspaces[resolved] = max(workspaces.get(resolved, 0), path.stat().st_mtime)
     return sorted(workspaces, key=lambda w: (-workspaces[w], w.lower()))
+
+
+def detect_cli_thread_update(workspace: str, current_thread_id: str | None) -> dict:
+    """检测当前工作区在电脑端是否有更新的 Codex CLI 会话产生。
+
+    若检测到本地最新会话与当前不同且修改时间晚于当前会话，返回 has_update=True 及会话信息。
+    """
+    res = {
+        "has_update": False,
+        "latest_thread_id": "",
+        "latest_mtime": 0.0,
+        "summary": "",
+    }
+    if not workspace:
+        return res
+
+    threads = list_workspace_threads(workspace)
+    if not threads:
+        return res
+
+    best = threads[0]
+    best_tid = best["thread_id"]
+    best_mtime = best["mtime"]
+    best_summary = best["last_summary"]
+
+    if not current_thread_id or current_thread_id == "__continue__":
+        res.update({
+            "has_update": True,
+            "latest_thread_id": best_tid,
+            "latest_mtime": best_mtime,
+            "summary": best_summary,
+        })
+    elif best_tid != current_thread_id:
+        cur_mtime = 0.0
+        for t in threads:
+            if t["thread_id"] == current_thread_id:
+                cur_mtime = t["mtime"]
+                break
+        if best_mtime > cur_mtime + 2.0:
+            res.update({
+                "has_update": True,
+                "latest_thread_id": best_tid,
+                "latest_mtime": best_mtime,
+                "summary": best_summary,
+            })
+
+    return res

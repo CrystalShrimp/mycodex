@@ -3,11 +3,11 @@ setlocal
 cd /d "%~dp0"
 
 echo ===================================================
-echo             auto_feishu »·¾³×Ô¼ìÓëÒ»¼üÅäÖÃ
+echo             auto_feishu ç¯å¢ƒè‡ªæ£€ä¸ä¸€é”®é…ç½®
 echo ===================================================
 echo.
 
-REM === 1. Node.js 20+ °æ±¾¼ì²é£¨±ØĞè£© ===
+REM === 1. Node.js 20+ ç‰ˆæœ¬æ£€æŸ¥ï¼ˆå¿…éœ€ï¼‰ ===
 set NODE_OK=0
 where node >nul 2>&1
 if errorlevel 1 goto CHECK_NODE_DONE
@@ -18,52 +18,52 @@ if %NODE_MAJOR% geq 20 set NODE_OK=1
 
 :CHECK_NODE_DONE
 if "%NODE_OK%"=="1" (
-    echo [OK] Node.js 20+ ¼ì²éÍ¨¹ı£¡
+    echo [OK] Node.js 20+ æ£€æŸ¥é€šè¿‡ï¼
     goto DO_NPM_INSTALL
 )
 
-echo [!] ¾¯¸æ: Î´¼ì²âµ½ Node.js 20+ »·¾³ (auto_feishu ĞèÒª Node.js v20 »ò¸ü¸ß°æ±¾)¡£
-set /p CHOICE_NODE="[?] ÊÇ·ñ×Ô¶¯ÏÂÔØ²¢¾²Ä¬°²×° Node.js v20.18.0 LTS£¿ [Y/N]: "
+echo [!] è­¦å‘Š: æœªæ£€æµ‹åˆ° Node.js 20+ ç¯å¢ƒ (auto_feishu éœ€è¦ Node.js v20 æˆ–æ›´é«˜ç‰ˆæœ¬)ã€‚
+set /p CHOICE_NODE="[?] æ˜¯å¦è‡ªåŠ¨ä¸‹è½½å¹¶é™é»˜å®‰è£… Node.js v20.18.0 LTSï¼Ÿ [Y/N]: "
 if /i not "%CHOICE_NODE%"=="Y" if /i not "%CHOICE_NODE%"=="" (
-    echo [ERROR] È±ÉÙ Node.js 20+£¬ÎŞ·¨ÔËĞĞ auto_feishu ·ÉÊé×Ô¶¯ÅäÖÃ¡£
+    echo [ERROR] ç¼ºå°‘ Node.js 20+ï¼Œæ— æ³•è¿è¡Œ auto_feishu é£ä¹¦è‡ªåŠ¨é…ç½®ã€‚
     pause
     exit /b 1
 )
 
-echo [!] ÕıÔÚÍ¨¹ı¹úÄÚ¾µÏñÏÂÔØ Node.js 20.18.0 ¹Ù·½°²×°°ü...
+echo [!] æ­£åœ¨é€šè¿‡å›½å†…é•œåƒä¸‹è½½ Node.js 20.18.0 å®˜æ–¹å®‰è£…åŒ…...
 set "MSI_PATH=%TEMP%\node_v20.msi"
 curl.exe -L -o "%MSI_PATH%" "https://npmmirror.com/mirrors/node/v20.18.0/node-v20.18.0-x64.msi"
 if exist "%MSI_PATH%" (
-    echo [!] ÕıÔÚ¾²Ä¬°²×° Node.js...
+    echo [!] æ­£åœ¨é™é»˜å®‰è£… Node.js...
     msiexec.exe /i "%MSI_PATH%" /quiet /norestart
     if errorlevel 1 (
         del /f /q "%MSI_PATH%" >nul 2>&1
-        echo [ERROR] Node.js ¾²Ä¬°²×°Ê§°Ü£¨Í¨³£ÊÇÒòÎªÃ»ÓĞ¹ÜÀíÔ±È¨ÏŞ£©¡£
-        echo ÇëÒÔ¹ÜÀíÔ±Éí·İÖØ¿ª cmd ÔÙÔËĞĞ±¾½Å±¾£¬»òÊÖ¶¯°²×° Node.js 20+ ºóÖØÅÜ¡£
+        echo [ERROR] Node.js é™é»˜å®‰è£…å¤±è´¥ï¼ˆé€šå¸¸æ˜¯å› ä¸ºæ²¡æœ‰ç®¡ç†å‘˜æƒé™ï¼‰ã€‚
+        echo è¯·ä»¥ç®¡ç†å‘˜èº«ä»½é‡å¼€ cmd å†è¿è¡Œæœ¬è„šæœ¬ï¼Œæˆ–æ‰‹åŠ¨å®‰è£… Node.js 20+ åé‡è·‘ã€‚
         pause
         exit /b 1
     )
     del /f /q "%MSI_PATH%" >nul 2>&1
     set "PATH=%ProgramFiles%\nodejs;%PATH%"
-    echo [OK] Node.js 20.18.0 °²×°Íê³É£¡
-    echo [×¢Òâ] ÈçºóĞø node ÃüÁî²»¿ÉÓÃ£¬ÇëÖØĞÂÔËĞĞ±¾½Å±¾»òÖØ¿ª cmd ´°¿Ú¡£
+    echo [OK] Node.js 20.18.0 å®‰è£…å®Œæˆï¼
+    echo [æ³¨æ„] å¦‚åç»­ node å‘½ä»¤ä¸å¯ç”¨ï¼Œè¯·é‡æ–°è¿è¡Œæœ¬è„šæœ¬æˆ–é‡å¼€ cmd çª—å£ã€‚
 ) else (
-    echo [ERROR] Node.js °²×°°üÏÂÔØÊ§°Ü£¬Çë¼ì²éÍøÂçºóÖØÊÔ¡£
+    echo [ERROR] Node.js å®‰è£…åŒ…ä¸‹è½½å¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œåé‡è¯•ã€‚
     pause
     exit /b 1
 )
 
 :DO_NPM_INSTALL
 echo.
-REM === 2. Ëø¶¨°æ npm ÒÀÀµ°²×°£¨ÊµÅÜÑéÖ¤£¬·À°ë³ÉÆ· node_modules£© ===
+REM === 2. é”å®šç‰ˆ npm ä¾èµ–å®‰è£…ï¼ˆå®è·‘éªŒè¯ï¼Œé˜²åŠæˆå“ node_modulesï¼‰ ===
 if not exist node_modules\.bin\tsx.cmd goto TSX_MISSING
 call node_modules\.bin\tsx.cmd --version >nul 2>&1
 if errorlevel 1 goto TSX_MISSING
-echo [OK] npm ÒÀÀµ¼ì²éÍ¨¹ı£¡
+echo [OK] npm ä¾èµ–æ£€æŸ¥é€šè¿‡ï¼
 goto CHROMIUM_INSTALL
 
 :TSX_MISSING
-echo [INFO] npm ÒÀÀµÈ±Ê§»òËğ»µ£¬ÕıÔÚÖØ×°£¨ÏÈÇåÀí¾É node_modules£©...
+echo [INFO] npm ä¾èµ–ç¼ºå¤±æˆ–æŸåï¼Œæ­£åœ¨é‡è£…ï¼ˆå…ˆæ¸…ç†æ—§ node_modulesï¼‰...
 if exist node_modules rmdir /s /q node_modules
 call npm ci --ignore-scripts
 if errorlevel 1 (
@@ -73,13 +73,13 @@ if errorlevel 1 (
 )
 call node_modules\.bin\tsx.cmd --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] npm ci Íê³Éºó tsx ÈÔ²»¿ÉÓÃ£¬Çë°ÑÒÔÉÏÊä³ö·¢¸øÖ§³ÖÈËÔ±¡£
+    echo [ERROR] npm ci å®Œæˆå tsx ä»ä¸å¯ç”¨ï¼Œè¯·æŠŠä»¥ä¸Šè¾“å‡ºå‘ç»™æ”¯æŒäººå‘˜ã€‚
     pause
     exit /b 1
 )
 
 :CHROMIUM_INSTALL
-REM === 3. Chromium °²×°£¨ÃİµÈ£ºplaywright ×ÔĞĞĞ£ÑéËùĞè¹¹½¨°æ±¾£¬ÒÑ×°ÇÒÆ¥ÅäÔòÃë¹ı£© ===
+REM === 3. Chromium å®‰è£…ï¼ˆå¹‚ç­‰ï¼šplaywright è‡ªè¡Œæ ¡éªŒæ‰€éœ€æ„å»ºç‰ˆæœ¬ï¼Œå·²è£…ä¸”åŒ¹é…åˆ™ç§’è¿‡ï¼‰ ===
 echo [INFO] Ensuring Playwright Chromium is installed...
 call npx playwright install chromium
 if errorlevel 1 (
@@ -94,8 +94,26 @@ if errorlevel 1 (
 )
 
 echo.
+if not "%~1"=="" set "FEISHU_DEPLOY_MODE=%~1"
+if not defined FEISHU_DEPLOY_MODE (
+    echo è¯·é€‰æ‹©é£ä¹¦åº”ç”¨å‘å¸ƒæ¨¡å¼ï¼š
+    echo   1. ä¸ªäººç”¨ï¼ˆä»…åˆ›å»ºè€…å¯ç”¨ï¼Œä¸æ”¹å˜å¯ç”¨èŒƒå›´ï¼‰
+    echo   2. å…¬ç”¨ï¼ˆå¯ç”¨èŒƒå›´å…¨å‘˜ï¼Œæ”¯æŒç¾¤æˆå‘˜ä¸€é”®å¯¼å…¥ï¼‰
+    set /p MODE_INPUT="è¯·è¾“å…¥é€‰é¡¹ [1/2] (é»˜è®¤ 1): "
+    if "%MODE_INPUT%"=="2" (
+        set "FEISHU_DEPLOY_MODE=public"
+    ) else (
+        set "FEISHU_DEPLOY_MODE=personal"
+    )
+)
+
+echo [INFO] éƒ¨ç½²æ¨¡å¼: %FEISHU_DEPLOY_MODE%
 echo [INFO] Starting Feishu one-click setup...
-call npm run feishu:setup
+if /i "%FEISHU_DEPLOY_MODE%"=="personal" (
+    call npm run feishu:setup -- --personal
+) else (
+    call npm run feishu:setup
+)
 if errorlevel 1 (
     echo [ERROR] Feishu setup failed.
     echo Re-run setup.cmd to resume from the last completed step.
@@ -104,5 +122,5 @@ if errorlevel 1 (
 )
 echo.
 echo [OK] Feishu setup completed.
-pause
+if "%~1"=="" pause
 exit /b 0

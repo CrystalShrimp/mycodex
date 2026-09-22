@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 from app.agent.cli_loop import codex_cli_loop, _kill_process_tree
-from app.agent.codex_sessions import codex_auth_ready
+from app.agent.codex_sessions import codex_auth_ready, detect_cli_thread_update
 from app.audit.logger import audit_logger
 from app.channel.base import UserTarget
 from app.channel.registry import get_channel
@@ -151,12 +151,8 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
 
     # --- /reset: reset all setup preferences for testing ---
     if text_lower in ("/reset", "重置"):
-        preferences = preferences_manager.get(open_id)
-        preferences.model = ""
-        preferences.level = ""
-        preferences.mode = ""
-        preferences_manager.save(open_id, preferences)
-        await reply.text("已清空所有初始设置（Model / Effort / Mode）。")
+        preferences_manager.clear(open_id)
+        await reply.text("已重置为默认初始设置（Model / Effort / Mode）。")
         return
 
     # --- /status ---
@@ -235,11 +231,8 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         )
         return
 
-    # --- /level [low|medium|high] / /effort: choose reasoning effort ---
-    if (
-        text_lower == "/level" or text_lower.startswith("/level ")
-        or text_lower == "/effort" or text_lower.startswith("/effort ")
-    ):
+    # --- /effort [low|medium|high|xhigh|max]: choose reasoning effort ---
+    if text_lower == "/effort" or text_lower.startswith("/effort "):
         parts = text.split(None, 1)
         preferences = preferences_manager.get(open_id)
 
@@ -349,23 +342,16 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         else:
             pred_text = "\n🆕 **预计关联会话：** 纯净项目 (发送首条消息时自动创建新 Thread)"
 
-        await reply.text(f"📁 工作区已切换：`{session.workspace}`{pred_text}")
+        pref = preferences_manager.get(open_id)
+        models = discover_models()
+        model_label = models.get(pref.model, {}).get("label", pref.model) or pref.model or "未设置"
+        mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
+        mode_label = mode_labels.get(pref.mode, pref.mode or "未设置")
 
-        ws_config = preferences_manager.load_workspace_config(resolved_workspace)
-        if ws_config and ws_config.complete:
-            models = discover_models()
-            model_label = models.get(ws_config.model, {}).get("label", ws_config.model)
-            await reply.view(
-                "ws_config_reuse",
-                approval_id=uuid.uuid4().hex[:12],
-                workspace=resolved_workspace,
-                model_label=model_label,
-                effort=ws_config.level,
-                mode=ws_config.mode,
-                action_type="switch",
-            )
-        else:
-            preferences_manager.clear(open_id)
+        await reply.text(
+            f"📁 工作区已切换：`{session.workspace}`{pred_text}\n"
+            f"⚙️ 当前配置：模型 `{model_label}` | 推理强度 `{pref.level or '未设置'}` | 审批模式 `{mode_label}`"
+        )
         return
 
     # --- /session [thread_id]: list codex threads in current workspace ---
@@ -413,29 +399,16 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         session.codex_thread_id = parts[1].strip()
         session.context_tokens = 0
         session_manager.save_session(session)
-        ws_config = preferences_manager.load_workspace_config(session.workspace)
-        cur_pref = preferences_manager.get(open_id)
-        target_config = ws_config if (ws_config and ws_config.complete) else (cur_pref if cur_pref.complete else None)
+        pref = preferences_manager.get(open_id)
+        models = discover_models()
+        model_label = models.get(pref.model, {}).get("label", pref.model) or pref.model or "未设置"
+        mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
+        mode_label = mode_labels.get(pref.mode, pref.mode or "未设置")
 
-        if target_config:
-            models = discover_models()
-            model_label = models.get(target_config.model, {}).get("label", target_config.model)
-            await reply.text(f"🔑 已切换到 Codex Thread `{session.codex_thread_id}`。")
-            await reply.view(
-                "ws_config_reuse",
-                approval_id=uuid.uuid4().hex[:12],
-                workspace=session.workspace,
-                model_label=model_label,
-                effort=target_config.level,
-                mode=target_config.mode,
-                action_type="switch",
-            )
-        else:
-            preferences_manager.clear(open_id)
-            await reply.text(
-                f"🔑 已切换到 Codex Thread `{session.codex_thread_id}`。\n"
-                "运行参数已清空，请依次设置 `/model`、`/level`、`/mode`。",
-            )
+        await reply.text(
+            f"🔑 已切换到 Codex Thread `{session.codex_thread_id}`。\n"
+            f"⚙️ 当前配置：模型 `{model_label}` | 推理强度 `{pref.level or '未设置'}` | 审批模式 `{mode_label}`"
+        )
         return
 
     # --- /continue [prompt]: resume most recent thread ---
@@ -462,30 +435,18 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         await codex_cli_loop.cancel_and_wait(skey)
         session = session_manager.reset_user_session(skey)
 
-        ws_config = preferences_manager.load_workspace_config(session.workspace)
-        if ws_config and ws_config.complete:
-            models = discover_models()
-            model_label = models.get(ws_config.model, {}).get("label", ws_config.model)
-            await reply.text(
-                f"✨ 新会话已重置。\n"
-                f"📁 工作区: `{session.workspace}`",
-            )
-            await reply.view(
-                "ws_config_reuse",
-                approval_id=uuid.uuid4().hex[:12],
-                workspace=session.workspace,
-                model_label=model_label,
-                effort=ws_config.level,
-                mode=ws_config.mode,
-                action_type="new",
-            )
-        else:
-            preferences_manager.clear(open_id)
-            await reply.text(
-                f"✨ 新会话已重置。\n"
-                f"📁 工作区: `{session.workspace}`\n"
-                "运行参数已清空，请依次设置 `/model`、`/level`、`/mode`。",
-            )
+        pref = preferences_manager.get(open_id)
+        models = discover_models()
+        model_label = models.get(pref.model, {}).get("label", pref.model) or pref.model or "未设置"
+        mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
+        mode_label = mode_labels.get(pref.mode, pref.mode or "未设置")
+
+        await reply.text(
+            f"✨ **新会话已就绪**\n"
+            f"📁 工作区：`{session.workspace}`\n"
+            f"⚙️ 当前配置：模型 `{model_label}` | 推理强度 `{pref.level or '未设置'}` | 审批模式 `{mode_label}`\n\n"
+            f"💡 全局配置已生效，直接发送消息即可开始对话。"
+        )
         return
 
     # --- /clean: remove stale state files of the caller's own context ---
@@ -743,56 +704,42 @@ async def _run_codex(
         preferences = preferences_manager.get(open_id)
         models = discover_models()
 
-        # After a recent /cd into a new workspace, ask whether to reuse last
-        # model/effort/mode before running. Only trigger if prefs are complete
-        # (otherwise the existing "first-time setup" path below handles it).
-        if session.pending_reuse_confirm and preferences.complete:
-            session.pending_prompt = prompt
-            session_manager.save_session(session)
-            model_label = models.get(preferences.model, {}).get("label", preferences.model)
-            await reply.view(
-                "reuse_last",
-                approval_id=uuid.uuid4().hex[:12],
-                model_label=model_label,
-                effort=preferences.level,
-                mode=preferences.mode,
-            )
-            return
+        # 默认配置继承：未配置时自动使用系统默认值（零门槛冷启动，免去强制卡片阻塞）
+        applied_defaults = False
+        if preferences.model not in models:
+            default_model = getattr(settings, "codex_default_model", "") or "gpt-5.6-terra"
+            if default_model not in models and models:
+                default_model = next(iter(models.keys()))
+            preferences.model = default_model
+            applied_defaults = True
+        if preferences.level not in VALID_EFFORTS:
+            preferences.level = "medium"
+            applied_defaults = True
+        if preferences.mode not in ("h", "m", "l"):
+            preferences.mode = getattr(settings, "approval_mode", "") or "m"
+            applied_defaults = True
 
-        need_model = preferences.model not in models
-        need_level = preferences.level not in VALID_EFFORTS
-        need_mode = preferences.mode not in ("h", "m", "l")
+        if applied_defaults:
+            preferences_manager.save(open_id, preferences)
 
-        if need_model or need_level or need_mode:
-            session.pending_prompt = prompt
-            session_manager.save_session(session)
-
-            if need_model:
-                await reply.view(
-                    "model_selection",
-                    approval_id=uuid.uuid4().hex[:12],
-                    models=models,
-                    current_model=preferences.model if not need_model else "",
-                )
-            if need_level:
-                await reply.view(
-                    "effort_selection",
-                    approval_id=uuid.uuid4().hex[:12],
-                    current_effort="",
-                )
-            if need_mode:
-                await reply.view(
-                    "mode_selection",
-                    approval_id=uuid.uuid4().hex[:12],
-                    active_mode="",
-                )
-
-            prompt_preview = prompt if len(prompt) <= 30 else prompt[:27] + "..."
-            await reply.text(
-                f"💡 任务已安全暂存：`{prompt_preview}`\n"
-                f"系统检测到有初始配置尚未设置。请直接在上方卡片中点选完成，全部设置就绪后系统将全自动重新开始为您执行任务！",
-            )
-            return
+        # 自动感知并对齐电脑端最新 CLI 会话（电脑端创建/更新会话向飞书端同步）
+        if not resume_thread_id and session.workspace:
+            try:
+                update_info = detect_cli_thread_update(session.workspace, session.codex_thread_id)
+                if update_info.get("has_update"):
+                    old_tid = session.codex_thread_id
+                    new_tid = update_info["latest_thread_id"]
+                    logger.info("Detected newer Codex CLI thread %s (old: %s) for user %s", new_tid, old_tid, open_id)
+                    if codex_cli_loop.is_running(skey):
+                        await codex_cli_loop.cancel_and_wait(skey)
+                    session.codex_thread_id = new_tid
+                    session_manager.save_session(session)
+                    summary_hint = f"（最新电脑端对话：`{update_info['summary'][:30]}`）" if update_info.get("summary") else ""
+                    await reply.text(
+                        f"ℹ️ 感知到电脑端本地更新了会话，已自动为您对齐最新会话上下文{summary_hint}。"
+                    )
+            except Exception as e:
+                logger.warning("Failed to check CLI thread update: %s", e)
 
         agent_result = await codex_cli_loop.send_and_wait(
             prompt=prompt,

@@ -849,7 +849,7 @@ def build_help_card() -> dict:
         "🤖 **MyCodex 飞书机器人指令手册** (Codex 驱动)\n\n"
         "**⚙️ 模型设置**\n"
         "- `/model [slug]` : 切换 Codex 模型 (如 gpt-5.6-terra, 不带参数弹卡片)\n"
-        "- `/level [low|medium|high]` : 切换推理强度 (同 `/effort`)\n"
+        "- `/effort [low|medium|high|xhigh|max]` : 切换推理强度 (不带参数弹卡片)\n"
         "- `/mode [h|m|l]` : 切换执行模式 (`h` 只读沙箱 / `m` 写入限工作区 / `l` 无沙箱全自动)\n\n"
         "**📁 工作区与文件管理**\n"
         "- `/pwd` : 查看当前关联的项目工作区绝对路径\n"

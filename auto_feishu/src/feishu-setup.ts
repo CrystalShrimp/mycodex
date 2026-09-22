@@ -124,6 +124,7 @@ class AutomationStepError extends Error {
 }
 
 const DEBUG_ENABLED = process.argv.includes("--debug");
+const PERSONAL_MODE = process.argv.includes("--personal") || (process.env.FEISHU_DEPLOY_MODE || "").trim().toLowerCase() === "personal";
 const DEAD_PROXY_PATTERN = /^(?:https?:\/\/)?127\.0\.0\.1:6984\/?$/i;
 
 function clearDeadProxyEnvironment(logger: Logger): void {
@@ -2629,34 +2630,38 @@ async function publishApp(ctx: StepContext): Promise<void> {
 
   const availabilityLabel = ctx.page.getByText("可用范围", { exact: true }).first();
   await availabilityLabel.waitFor({ state: "visible", timeout: ctx.config.timeoutMs });
-  const availabilityItem = availabilityLabel.locator("xpath=ancestor::*[contains(@class, 'ud__form__item')][1]");
-  const allMembersConfigured = await waitForAnyText(ctx.page, ["全部成员", "所有员工"], 1200);
-  if (!allMembersConfigured) {
-    const editAvailability = ctx.page.getByRole("button", { name: "编辑", exact: true }).last();
-    if (!(await editAvailability.isVisible().catch(() => false))) {
-      throw new Error("未找到应用可用范围的编辑按钮。");
+
+  if (PERSONAL_MODE) {
+    ctx.logger.info("个人用模式：保持默认可用范围（仅创建者），不修改为全部成员。");
+  } else {
+    const allMembersConfigured = await waitForAnyText(ctx.page, ["全部成员", "所有员工"], 1200);
+    if (!allMembersConfigured) {
+      const editAvailability = ctx.page.getByRole("button", { name: "编辑", exact: true }).last();
+      if (!(await editAvailability.isVisible().catch(() => false))) {
+        throw new Error("未找到应用可用范围的编辑按钮。");
+      }
+      await editAvailability.click({ timeout: ctx.config.timeoutMs });
+      const availabilityDialog = (await findVisibleModal(ctx.page, ctx.config.timeoutMs)) ?? ctx.page;
+      const allMembersOption = await firstVisibleLocator(
+        [
+          availabilityDialog.getByRole("radio", { name: "全部成员" }),
+          availabilityDialog.getByText("全部成员", { exact: true })
+        ],
+        ctx.config.timeoutMs
+      );
+      if (!allMembersOption) throw new Error("可用范围弹窗中未找到“全部成员”选项。");
+      await allMembersOption.click({ timeout: ctx.config.timeoutMs });
+      const confirmAvailability = await waitForEnabledAction(availabilityDialog, ["确定", "确认"], ctx.config.timeoutMs);
+      if (!confirmAvailability) throw new Error("选择全部成员后未找到可用范围确认按钮。");
+      await confirmAvailability.locator.click({ timeout: ctx.config.timeoutMs });
+      await ctx.page.waitForTimeout(800);
     }
-    await editAvailability.click({ timeout: ctx.config.timeoutMs });
-    const availabilityDialog = (await findVisibleModal(ctx.page, ctx.config.timeoutMs)) ?? ctx.page;
-    const allMembersOption = await firstVisibleLocator(
-      [
-        availabilityDialog.getByRole("radio", { name: "全部成员" }),
-        availabilityDialog.getByText("全部成员", { exact: true })
-      ],
-      ctx.config.timeoutMs
-    );
-    if (!allMembersOption) throw new Error("可用范围弹窗中未找到“全部成员”选项。");
-    await allMembersOption.click({ timeout: ctx.config.timeoutMs });
-    const confirmAvailability = await waitForEnabledAction(availabilityDialog, ["确定", "确认"], ctx.config.timeoutMs);
-    if (!confirmAvailability) throw new Error("选择全部成员后未找到可用范围确认按钮。");
-    await confirmAvailability.locator.click({ timeout: ctx.config.timeoutMs });
-    await ctx.page.waitForTimeout(800);
+    const finalAvailability = await waitForAnyText(ctx.page, ["全部成员", "所有员工"], 3000);
+    if (!finalAvailability) {
+      throw new Error("应用可用范围未成功设置为全部成员，已停止发布。");
+    }
+    ctx.logger.info("应用可用范围已设置为全员：" + finalAvailability);
   }
-  const finalAvailability = await waitForAnyText(ctx.page, ["全部成员", "所有员工"], 3000);
-  if (!finalAvailability) {
-    throw new Error("应用可用范围未成功设置为全部成员，已停止发布。");
-  }
-  ctx.logger.info("应用可用范围已设置为全员：" + finalAvailability);
 
   // 尝试勾选“允许机器人被添加到外部群中使用”（群聊使用的前提之一）。
   // 该选项依赖账号实名状态：勾不动/不存在时仅提醒，绝不阻断发布流程。

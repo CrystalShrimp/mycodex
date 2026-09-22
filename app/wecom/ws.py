@@ -103,15 +103,20 @@ class WeComWsClient:
             try:
                 async with connect(WECOM_WS_URL, open_timeout=20, ping_interval=None) as conn:
                     self._conn = conn
-                    await self._subscribe()
-                    backoff = 1.0
-                    self._connected_at = time.time()
-                    logger.info("WeCom WS connected and subscribed (bot=%s)", self._bot_id)
-                    ping_task = asyncio.get_running_loop().create_task(self._ping_loop())
+                    recv_task = asyncio.get_running_loop().create_task(self._recv_loop())
+                    ping_task = None
                     try:
-                        await self._recv_loop()
+                        await self._subscribe()
+                        backoff = 1.0
+                        self._connected_at = time.time()
+                        logger.info("WeCom WS connected and subscribed (bot=%s)", self._bot_id)
+                        ping_task = asyncio.get_running_loop().create_task(self._ping_loop())
+                        await recv_task
                     finally:
-                        ping_task.cancel()
+                        if ping_task and not ping_task.done():
+                            ping_task.cancel()
+                        if recv_task and not recv_task.done():
+                            recv_task.cancel()
                         self._subscribed = False
                         self._conn = None
             except asyncio.CancelledError:

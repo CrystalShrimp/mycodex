@@ -24,99 +24,72 @@ class UserPreferences:
         return bool(self.model and self.level and self.mode)
 
 
+GLOBAL_PREFERENCES_FILE = MYCODEX_ROOT / "config" / "global_preferences.json"
+
+
 class PreferencesManager:
     def __init__(self, state_dir: Path | None = None) -> None:
         self._state_dir = state_dir or (MYCODEX_ROOT / ".preferences")
         self._state_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
 
-    def _path(self, open_id: str) -> Path:
-        return self._state_dir / f"{open_id}.json"
+    def _get_system_defaults(self) -> UserPreferences:
+        from app.profiles import discover_models
+        from config.settings import settings
+        models = discover_models()
+        default_model = getattr(settings, "codex_default_model", "") or "gpt-5.6-terra"
+        if default_model not in models and models:
+            default_model = next(iter(models.keys()))
+        default_level = "medium"
+        default_mode = getattr(settings, "approval_mode", "") or "m"
+        return UserPreferences(
+            model=default_model,
+            level=default_level,
+            mode=default_mode,
+        )
 
-    def get(self, open_id: str) -> UserPreferences:
-        path = self._path(open_id)
-        if not path.exists():
-            # 迁移：偏好 key 从裸 open_id 改为会话 key（私聊=p_open_id）后，
-            # 首次读取时把旧文件内容搬到新 key，私聊用户无需重新选一遍。
-            if open_id.startswith("p_"):
-                legacy = self._state_dir / f"{open_id[2:]}.json"
-                if legacy.exists():
-                    try:
-                        pref = self._load_file(legacy)
-                        if pref is not None:
-                            self.save(open_id, pref)
-                            return pref
-                    except Exception as exc:
-                        logger.warning("Failed to migrate preferences for %s: %s", open_id, exc)
-            return UserPreferences()
-        pref = self._load_file(path)
-        return pref if pref is not None else UserPreferences()
-
-    def _load_file(self, path: Path) -> UserPreferences | None:
+    def get_global(self) -> UserPreferences:
+        defaults = self._get_system_defaults()
+        if not GLOBAL_PREFERENCES_FILE.exists():
+            return defaults
         try:
-            data = json.loads(path.read_text("utf-8"))
+            data = json.loads(GLOBAL_PREFERENCES_FILE.read_text("utf-8"))
             return UserPreferences(
-                model=str(data.get("model", "")),
-                level=str(data.get("level", "")),
-                mode=str(data.get("mode", "")),
+                model=str(data.get("model", "") or defaults.model),
+                level=str(data.get("level", "") or defaults.level),
+                mode=str(data.get("mode", "") or defaults.mode),
             )
         except Exception as exc:
-            logger.warning("Failed to load preferences from %s: %s", path, exc)
-            return None
+            logger.warning("Failed to load global preferences: %s", exc)
+            return defaults
 
-    def save(self, open_id: str, preferences: UserPreferences) -> None:
+    def save_global(self, preferences: UserPreferences) -> None:
         payload = json.dumps(asdict(preferences), indent=2, ensure_ascii=False)
         with self._lock:
-            self._path(open_id).write_text(payload, "utf-8")
+            GLOBAL_PREFERENCES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            GLOBAL_PREFERENCES_FILE.write_text(payload, "utf-8")
+
+    def get(self, open_id: str) -> UserPreferences:
+        """获取当前配置。优先读取系统全局配置，保证切换目录及新项目时无需重新配置。"""
+        return self.get_global()
+
+    def save(self, open_id: str, preferences: UserPreferences) -> None:
+        """保存配置。同步写入全局配置，一处调整全局生效。"""
+        self.save_global(preferences)
 
     def clear(self, open_id: str) -> UserPreferences:
-        preferences = UserPreferences()
-        self.save(open_id, preferences)
-        return preferences
-
-    def _workspace_config_path(self, workspace: str) -> Path | None:
-        if not workspace:
-            return None
-        try:
-            ws_dir = Path(workspace).resolve()
-            if not ws_dir.exists() or not ws_dir.is_dir():
-                return None
-            mycodex_dir = ws_dir / ".mycodex"
-            mycodex_dir.mkdir(parents=True, exist_ok=True)
-            return mycodex_dir / "config.json"
-        except Exception:
-            return None
+        """重置配置回系统默认值。"""
+        defaults = self._get_system_defaults()
+        self.save_global(defaults)
+        return defaults
 
     def load_workspace_config(self, workspace: str) -> UserPreferences | None:
-        """Load workspace-level mycodex_config.json if it exists and is complete."""
-        config_path = self._workspace_config_path(workspace)
-        if not config_path or not config_path.exists():
-            return None
-        try:
-            data = json.loads(config_path.read_text("utf-8"))
-            pref = UserPreferences(
-                model=str(data.get("model", "")),
-                level=str(data.get("level", "")),
-                mode=str(data.get("mode", "")),
-            )
-            return pref if pref.complete else None
-        except Exception as exc:
-            logger.warning("Failed to load workspace config from %s: %s", workspace, exc)
-            return None
+        """已废除项目内配置记忆，统一使用全局配置。"""
+        return None
 
     def save_workspace_config(self, workspace: str, preferences: UserPreferences) -> None:
-        """Save complete preferences to workspace/.claude/mycodex_config.json."""
-        if not preferences.complete:
-            return
-        config_path = self._workspace_config_path(workspace)
-        if not config_path:
-            return
-        try:
-            payload = json.dumps(asdict(preferences), indent=2, ensure_ascii=False)
-            config_path.write_text(payload, "utf-8")
-            logger.info("Saved workspace config to %s", config_path)
-        except Exception as exc:
-            logger.warning("Failed to save workspace config to %s: %s", workspace, exc)
+        """已废除项目内配置记忆，不再往项目目录下写入配置。"""
+        pass
 
 
 preferences_manager = PreferencesManager()

@@ -179,12 +179,13 @@ class WeComChannel:
         req_id = self._req_id_for(target)
         if req_id and self._client is not None:
             try:
-                resp = await self._client.respond_text(req_id, text)
+                stream_id = new_stream_id()
+                resp = await self._client.respond_stream(req_id, stream_id, text, finish=True)
                 if resp.get("errcode", -1) == 0:
                     return resp
-                logger.warning("WeCom respond_text errcode=%s, fallback push", resp.get("errcode"))
+                logger.warning("WeCom respond_stream errcode=%s, fallback push", resp.get("errcode"))
             except Exception as e:
-                logger.warning("WeCom respond_text failed (%s), fallback push", e)
+                logger.warning("WeCom respond_stream failed (%s), fallback push", e)
         # markdown 里连续换行会被折叠，转成每行一条
         md = text.replace("\n\n", "\n\n&nbsp;\n")
         await self._push_markdown(target, md)
@@ -243,7 +244,7 @@ class WeComChannel:
     async def send_selection(self, target: UserTarget, sel: Selection) -> None:
         raise NotImplementedError
 
-    def is_allowed(self, target: UserTarget) -> bool:
+    async def is_allowed(self, target: UserTarget) -> bool:
         mode = settings.get_allowed_mode()
         if mode == "org":
             return True

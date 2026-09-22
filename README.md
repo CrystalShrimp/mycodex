@@ -8,7 +8,7 @@
 - **终端与飞书双向会话延续**：本机终端和飞书共享 Codex 原生会话（`~/.codex/sessions`），离开工位在飞书接手，回到工位用 `codex resume` 继续，上下文不丢失；
 - **三档执行模式（沙箱分级）**：`h` 严格（只读沙箱，禁止写入）/ `m` 平衡（写入限制在工作区内）/ `l` 全自动（无沙箱放行）；
 - **多用户多工作区隔离**：每个飞书用户分别维护自己的工作区、模型、推理强度、执行模式和会话；
-- **模型与推理强度即时切换**：模型来自本机 codex 登录态（`gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5`），飞书里 `/model`、`/level` 即时切换。
+- **模型与推理强度即时切换**：模型来自本机 codex 登录态（`gpt-5.6-terra` / `gpt-5.6-luna` / `gpt-5.5`），飞书里 `/model`、`/effort` 即时切换。
 
 ## 快速开始
 
@@ -37,7 +37,7 @@ bash scripts/setup_autostart_mac.sh                    # 开机自启 (launchd)
 |---|---|---|
 | 工作区 | `/cd`、`/pwd`、`/file` | 切换/查看工作区，发送工作区文件 |
 | 会话 | `/new`、`/stop`、`/continue`、`/resume <id>`、`/session`、`/clean` | 创建/中断/继续/恢复/列出选择/清理会话 |
-| 配置 | `/model`、`/level`、`/mode`、`/reset` | Codex 模型、推理强度、执行模式 |
+| 配置 | `/model`、`/effort`、`/mode`、`/reset` | Codex 模型、推理强度、执行模式 |
 | 工具 | `/status`、`/mem`、`/notes`、`/sh`、`/help` | 状态、记忆（AGENTS.md）、笔记、Shell、帮助 |
 
 完整指令说明见 [doc/input.md 附录 A](doc/input.md)。

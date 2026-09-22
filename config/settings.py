@@ -78,6 +78,10 @@ class Settings(BaseSettings):
             if u.startswith("wecom:"):
                 if platform == "wecom":
                     out.append(u[len("wecom:"):])
+            elif platform == "wecom":
+                # 兼容直接写企微用户名（例如 Kun），而非飞书 open_id (ou_xxx)
+                if not u.startswith("ou_"):
+                    out.append(u)
             elif platform != "wecom":
                 out.append(u)
         return out

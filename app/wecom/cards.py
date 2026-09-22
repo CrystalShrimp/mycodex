@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+import uuid
 from typing import Any
 
 from app.channel.base import ProgressSnap
@@ -24,50 +26,45 @@ def _btn(action: str, value: str, text: str, style: int, extra: str = "") -> dic
 
 
 def render_progress_text(snap: ProgressSnap) -> str:
-    """进度流式消息内容（纯文本，markdown 支持待真机验证后启用）。"""
-    icon = {
-        "running": "🔄", "retrying": "🔁",
-        "completed": "✅", "failed": "❌", "cancelled": "⏹️",
-    }.get(snap.status, "🔄")
-    head = {
-        "running": "任务执行中", "retrying": "API 重试中",
-        "completed": "任务完成", "failed": "任务失败", "cancelled": "已取消",
-    }.get(snap.status, snap.status)
+    """企微流式进度与最终结果渲染。适配企业微信 Markdown 排版规范。"""
+    if snap.status == "completed":
+        result = (snap.result_text or "").strip()
+        if not result and snap.last_text:
+            result = snap.last_text.strip()
+        if not result:
+            result = "✅ 执行完成"
 
-    lines = [f"{icon} {head} | {snap.model or '-'} | {snap.elapsed_s:.0f}s"]
+        # 如果调用了工具，在末尾附带轻量脚注；纯对话直接返回自然回复
+        if snap.tool_counts:
+            tool_summary = " · ".join(f"{k}×{v}" for k, v in list(snap.tool_counts.items())[:4])
+            footer = f"\n\n> <font color=\"comment\">⏱️ {snap.elapsed_s:.1f}s · 🛠️ {tool_summary}</font>"
+            return result + footer
+        return result
 
+    if snap.status in ("failed", "cancelled"):
+        head = "❌ 任务执行失败" if snap.status == "failed" else "⏹️ 任务已取消"
+        parts = [f"**{head}** ({snap.elapsed_s:.0f}s)"]
+        if snap.error:
+            parts.append(f"> <font color=\"warning\">{snap.error}</font>")
+        if snap.result_text:
+            parts.append(snap.result_text.strip())
+        return "\n\n".join(parts)
+
+    # running / retrying 过程状态
+    icon = "🔁" if snap.status == "retrying" else "🔄"
+    head = "API 重试中" if snap.status == "retrying" else "思考执行中"
+    lines = [f"{icon} **{head}** ({snap.elapsed_s:.0f}s)"]
     if snap.tool_counts:
-        tools = "  ".join(f"{k}×{v}" for k, v in list(snap.tool_counts.items())[:6])
-        lines.append(f"工具: {tools} (共{sum(snap.tool_counts.values())}次)")
+        tools = " · ".join(f"{k}×{v}" for k, v in list(snap.tool_counts.items())[:5])
+        lines.append(f"🛠️ 工具: {tools}")
     if snap.current_tool:
         args = f" {snap.current_tool_args}" if snap.current_tool_args else ""
-        lines.append(f"当前: {snap.current_tool}{args}")
-    if snap.last_warning and snap.status in ("retrying", "failed"):
-        lines.append(f"⚠️ {snap.last_warning}")
-    if snap.warnings:
-        lines.append(f"告警: {snap.warnings} 条")
-    if snap.last_text and snap.status == "running":
-        text = snap.last_text.strip().replace("\n", " ")
+        lines.append(f"▶️ 当前: `{snap.current_tool}`{args}")
+    if snap.last_text:
+        text = snap.last_text.strip()
         if len(text) > 200:
-            text = text[:200] + "…"
-        lines.append(f"💭 {text}")
-
-    if snap.status in ("completed", "failed", "cancelled"):
-        if snap.result_text:
-            result = snap.result_text.strip()
-            if len(result) > 1500:
-                result = result[:1500] + "\n…(过长已截断)"
-            lines.append("—")
-            lines.append(result)
-        if snap.error:
-            lines.append(f"错误: {snap.error[:300]}")
-        tokens = []
-        if snap.input_tokens:
-            tokens.append(f"入{snap.input_tokens:,}")
-        if snap.output_tokens:
-            tokens.append(f"出{snap.output_tokens:,}")
-        if tokens:
-            lines.append(f"Token: {' / '.join(tokens)} | 任务 {snap.task_id}")
+            text = text[-200:]
+        lines.append(f"\n{text}")
     return "\n".join(lines)
 
 
@@ -96,13 +93,14 @@ def approval_card(approval_id: str, tool_name: str, tool_input: dict, session_id
 
 
 def buttons_card(title: str, desc: str, buttons: list[dict], task_id: str = "") -> dict:
+    tid = task_id if (task_id and re.fullmatch(r"[A-Za-z0-9_\-@]{1,64}", task_id)) else f"btn_{uuid.uuid4().hex[:16]}"
     return {
         "card_type": "button_interaction",
         "source": {"desc": "MyCodex"},
         "main_title": {"title": title},
         "sub_title_text": desc[:800] if desc else "",
         "button_list": buttons,
-        "task_id": task_id or title,
+        "task_id": tid,
     }
 
 
@@ -116,6 +114,7 @@ def mode_selection_card(approval_id: str, active_mode: str) -> dict:
             _btn("md", "m", labels["m"], 1 if active_mode != "m" else 3),
             _btn("md", "l", labels["l"], 1 if active_mode != "l" else 3),
         ],
+        task_id=approval_id,
     )
 
 
@@ -132,6 +131,7 @@ def effort_selection_card(approval_id: str, current_effort: str) -> dict:
             _btn("ef", lv, labels[lv], 1 if current_effort != lv else 3, approval_id)
             for lv in order
         ],
+        task_id=approval_id,
     )
 
 
@@ -142,6 +142,7 @@ def confirm_card(title: str, desc: str, yes_action: str, no_action: str, extra: 
             _btn(yes_action, "yes", "✅ 确认", 1, extra),
             _btn(no_action, "no", "↩️ 取消/重选", 2, extra),
         ],
+        task_id=extra,
     )
 
 
@@ -152,7 +153,7 @@ def help_markdown() -> str:
     return (
         "# MyCodex 指令帮助\n"
         "**会话**: `/new` `/stop` `/continue` `/resume <id>` `/session` `/clean`\n"
-        "**配置**: `/model` `/level` `/mode` `/reset`\n"
+        "**配置**: `/model` `/effort` `/mode` `/reset`\n"
         "**工作区**: `/cd <绝对路径>` `/pwd` `/file`\n"
         "**工具**: `/status` `/mem` `/notes` `/sh` `/help`\n\n"
         "普通文本直接作为任务发给 Codex 执行。"
