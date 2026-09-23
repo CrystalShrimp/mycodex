@@ -187,10 +187,21 @@ def main() -> int:
     preview_count = min(len(members), 5)
     print(f"   预览前 {preview_count} 名: {', '.join(members[:preview_count])}{'...' if len(members) > preview_count else ''}")
 
+    # 读取现有白名单并合并
     current_allowed = env_vars.get("ALLOWED_USERS", "")
     existing_list = [u.strip() for u in current_allowed.split(",") if u.strip()]
-    wecom_users = [u for u in existing_list if u.startswith("wecom:")]
+    wecom_users = [u[len("wecom:"):].strip() for u in existing_list if u.startswith("wecom:")]
     feishu_users = [u for u in existing_list if not u.startswith("wecom:")]
+
+    # 自动迁移残留的企微白名单至 WECOM_ALLOWED_USERS
+    if wecom_users:
+        existing_wecom = env_vars.get("WECOM_ALLOWED_USERS", "")
+        wecom_list = [u.strip() for u in existing_wecom.split(",") if u.strip()]
+        for u in wecom_users:
+            if u not in wecom_list:
+                wecom_list.append(u)
+        upsert_env("WECOM_ALLOWED_USERS", ",".join(wecom_list))
+        print(f"ℹ️ 检测到历史残留的企微白名单，已自动平滑迁移至 WECOM_ALLOWED_USERS ({len(wecom_list)} 人)")
 
     if feishu_users:
         print(f"\n当前 .env 中已有 {len(feishu_users)} 名飞书白名单用户。")
@@ -200,14 +211,11 @@ def main() -> int:
                 if u not in members:
                     members.append(u)
 
-    final_users = wecom_users + members
-    upsert_env("ALLOWED_USERS", ",".join(final_users))
+    upsert_env("ALLOWED_USERS", ",".join(members))
 
     print("\n" + "=" * 60)
     print(f"🎉 成功将 {len(members)} 名飞书群成员写入 .env 的 ALLOWED_USERS！")
-    if wecom_users:
-        print(f"   （同时保留了已有的 {len(wecom_users)} 名企微用户）")
-    print("💡 提示：若服务正在运行，请执行 MyCodex-Restart.bat 重启服务使新名单生效。")
+    print("💡 提示：若服务正在运行，请执行重启服务使新名单生效。")
     print("=" * 60)
     return 0
 

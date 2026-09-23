@@ -2,12 +2,17 @@
 setlocal
 cd /d "%~dp0"
 
+if /I "%HTTP_PROXY%"=="http://127.0.0.1:6984" set HTTP_PROXY=
+if /I "%HTTPS_PROXY%"=="http://127.0.0.1:6984" set HTTPS_PROXY=
+if /I "%http_proxy%"=="http://127.0.0.1:6984" set http_proxy=
+if /I "%https_proxy%"=="http://127.0.0.1:6984" set https_proxy=
+
 echo ===================================================
-echo             auto_feishu 环境自检与一键配置
+echo             auto_feishu Setup and Pre-check
 echo ===================================================
 echo.
 
-REM === 1. Node.js 20+ 版本检查（必需） ===
+REM === 1. Node.js 20+ check ===
 set NODE_OK=0
 where node >nul 2>&1
 if errorlevel 1 goto CHECK_NODE_DONE
@@ -18,52 +23,44 @@ if %NODE_MAJOR% geq 20 set NODE_OK=1
 
 :CHECK_NODE_DONE
 if "%NODE_OK%"=="1" (
-    echo [OK] Node.js 20+ 检查通过！
+    echo [OK] Node.js 20+ detected.
     goto DO_NPM_INSTALL
 )
 
-echo [!] 警告: 未检测到 Node.js 20+ 环境 (auto_feishu 需要 Node.js v20 或更高版本)。
-set /p CHOICE_NODE="[?] 是否自动下载并静默安装 Node.js v20.18.0 LTS？ [Y/N]: "
+echo [!] Warning: Node.js 20+ not detected (auto_feishu requires Node.js v20+).
+set /p CHOICE_NODE="[?] Download and install Node.js v20.18.0 LTS automatically? [Y/N]: "
 if /i not "%CHOICE_NODE%"=="Y" if /i not "%CHOICE_NODE%"=="" (
-    echo [ERROR] 缺少 Node.js 20+，无法运行 auto_feishu 飞书自动配置。
+    echo [ERROR] Missing Node.js 20+. Cannot continue auto_feishu setup.
     pause
     exit /b 1
 )
 
-echo [!] 正在通过国内镜像下载 Node.js 20.18.0 官方安装包...
+echo [*] Downloading Node.js 20.18.0 installer...
 set "MSI_PATH=%TEMP%\node_v20.msi"
 curl.exe -L -o "%MSI_PATH%" "https://npmmirror.com/mirrors/node/v20.18.0/node-v20.18.0-x64.msi"
 if exist "%MSI_PATH%" (
-    echo [!] 正在静默安装 Node.js...
+    echo [*] Installing Node.js silently...
     msiexec.exe /i "%MSI_PATH%" /quiet /norestart
-    if errorlevel 1 (
-        del /f /q "%MSI_PATH%" >nul 2>&1
-        echo [ERROR] Node.js 静默安装失败（通常是因为没有管理员权限）。
-        echo 请以管理员身份重开 cmd 再运行本脚本，或手动安装 Node.js 20+ 后重跑。
-        pause
-        exit /b 1
-    )
     del /f /q "%MSI_PATH%" >nul 2>&1
     set "PATH=%ProgramFiles%\nodejs;%PATH%"
-    echo [OK] Node.js 20.18.0 安装完成！
-    echo [注意] 如后续 node 命令不可用，请重新运行本脚本或重开 cmd 窗口。
+    echo [OK] Node.js 20.18.0 installed.
 ) else (
-    echo [ERROR] Node.js 安装包下载失败，请检查网络后重试。
+    echo [ERROR] Failed to download Node.js installer. Please check your network.
     pause
     exit /b 1
 )
 
 :DO_NPM_INSTALL
 echo.
-REM === 2. 锁定版 npm 依赖安装（实跑验证，防半成品 node_modules） ===
+REM === 2. npm dependencies check ===
 if not exist node_modules\.bin\tsx.cmd goto TSX_MISSING
 call node_modules\.bin\tsx.cmd --version >nul 2>&1
 if errorlevel 1 goto TSX_MISSING
-echo [OK] npm 依赖检查通过！
+echo [OK] npm dependencies verified.
 goto CHROMIUM_INSTALL
 
 :TSX_MISSING
-echo [INFO] npm 依赖缺失或损坏，正在重装（先清理旧 node_modules）...
+echo [INFO] npm dependencies missing. Installing (npm ci)...
 if exist node_modules rmdir /s /q node_modules
 call npm ci --ignore-scripts
 if errorlevel 1 (
@@ -73,33 +70,41 @@ if errorlevel 1 (
 )
 call node_modules\.bin\tsx.cmd --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] npm ci 完成后 tsx 仍不可用，请把以上输出发给支持人员。
+    echo [ERROR] tsx is still unavailable after npm ci.
     pause
     exit /b 1
 )
 
 :CHROMIUM_INSTALL
-REM === 3. Chromium 安装（幂等：playwright 自行校验所需构建版本，已装且匹配则秒过） ===
+REM === 3. Playwright Chromium ===
 echo [INFO] Ensuring Playwright Chromium is installed...
-call npx playwright install chromium
-if errorlevel 1 (
-    echo [ERROR] Chromium install failed. Without it Feishu automation cannot run.
-    echo   Common causes:
-    echo     1. Network / firewall blocked the download
-    echo     2. Company proxy required ^(set HTTP_PROXY^)
-    echo     3. Disk space issue
-    echo   Retry manually:  cd auto_feishu ^& npx playwright install chromium
-    pause
-    exit /b 1
+node -e "const { chromium } = require('playwright'); const p = chromium.executablePath(); process.exit(require('fs').existsSync(p) ? 0 : 1);" >nul 2>nul
+if %errorlevel% equ 0 (
+    echo [OK] Playwright Chromium browser driver is ready.
+) else (
+    echo [INFO] Downloading Playwright Chromium via mirror accelerator...
+    if exist "%LOCALAPPDATA%\ms-playwright\__dirlock" rd /s /q "%LOCALAPPDATA%\ms-playwright\__dirlock" 2>nul
+    set "PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright"
+    call npx playwright install chromium
+    if errorlevel 1 (
+        echo [ERROR] Chromium install failed. Without it Feishu automation cannot run.
+        echo   Common causes:
+        echo     1. Network / firewall blocked the download
+        echo     2. Company proxy required ^(set HTTP_PROXY^)
+        echo     3. Disk space issue
+        echo   Retry manually: cd auto_feishu ^& npx playwright install chromium
+        pause
+        exit /b 1
+    )
 )
 
 echo.
 if not "%~1"=="" set "FEISHU_DEPLOY_MODE=%~1"
 if not defined FEISHU_DEPLOY_MODE (
-    echo 请选择飞书应用发布模式：
-    echo   1. 个人用（仅创建者可用，不改变可用范围）
-    echo   2. 公用（可用范围全员，支持群成员一键导入）
-    set /p MODE_INPUT="请输入选项 [1/2] (默认 1): "
+    echo Select Feishu deployment mode:
+    echo   1. Personal (creator only)
+    echo   2. Public (organization-wide, supports group member import)
+    set /p MODE_INPUT="Enter option [1/2] (default 1): "
     if "%MODE_INPUT%"=="2" (
         set "FEISHU_DEPLOY_MODE=public"
     ) else (
@@ -107,8 +112,8 @@ if not defined FEISHU_DEPLOY_MODE (
     )
 )
 
-echo [INFO] 部署模式: %FEISHU_DEPLOY_MODE%
-echo [INFO] Starting Feishu one-click setup...
+echo [INFO] Deployment mode: %FEISHU_DEPLOY_MODE%
+echo [INFO] Starting Feishu automation setup...
 if /i "%FEISHU_DEPLOY_MODE%"=="personal" (
     call npm run feishu:setup -- --personal
 ) else (
@@ -116,11 +121,12 @@ if /i "%FEISHU_DEPLOY_MODE%"=="personal" (
 )
 if errorlevel 1 (
     echo [ERROR] Feishu setup failed.
-    echo Re-run setup.cmd to resume from the last completed step.
     pause
     exit /b 1
 )
+
 echo.
 echo [OK] Feishu setup completed.
 if "%~1"=="" pause
+cd /d "%~dp0.."
 exit /b 0

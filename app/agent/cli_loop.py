@@ -330,6 +330,7 @@ class CodexCLILoop:
             cwd=workspace,
             env=env,
             limit=10 * 1024 * 1024,
+            start_new_session=(sys.platform != "win32"),
         )
         skey = skey_for(target)
         self._processes[skey] = proc

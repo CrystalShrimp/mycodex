@@ -252,10 +252,11 @@ class WeComChannel:
             # 企微暂不支持 groups（群成员查询）/creator（飞书创建人）模式，fail-closed
             logger.warning("WeCom is_allowed: mode %s unsupported on wecom, denying", mode)
             return False
-        raw = settings.get_allowed_users()
-        if not raw:
+        # 企微专属白名单：WECOM_ALLOWED_USERS 为空 = 企微全员开放；非空 = 仅名单内 userid 可用
+        wecom_allowed = settings.get_allowed_users_for("wecom")
+        if not wecom_allowed:
             return True
-        return target.user_id in settings.get_allowed_users_for("wecom")
+        return target.user_id in wecom_allowed
 
     # ---- 富视图 ----
 

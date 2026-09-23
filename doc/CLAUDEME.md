@@ -42,7 +42,7 @@ cd D:\ForRunning\ForDev\mycodex
 uv sync
 
 # 3. 复制环境变量模板
-cp examples/.env.example .env
+cp config/env.example .env
 
 # 4. 确认 Codex 已登录（模型走本机 ChatGPT 登录态，无需任何 API Key）—— 详见 §5
 codex login status    # 应显示 Logged in；否则执行 codex login
@@ -66,7 +66,7 @@ uv run python -m app.main
 
 ## 4. `.env` 字段详解
 
-模板见 `examples/.env.example`。**必填项**标 ★，修改后**必须重启**才生效（除非另有说明）。
+模板见 `config/env.example`。**必填项**标 ★，修改后**必须重启**才生效（除非另有说明）。
 
 ### 4.1 飞书应用凭据（Auto feishu 会自动写入这几项）
 
@@ -389,11 +389,11 @@ Auto feishu **可重复运行**，每次会：
 
 项目根目录已自带：
 
-- `MyCodex.bat`：直接启动托盘 + 后端服务
+- `launcher_windows/MyCodex.bat`：直接启动托盘 + 后端服务
 - `MyCodex-Debug.bat`：开 console 模式，禁代理，检测端口占用，崩了不退出（看错误）
-- `MyCodex-Restart.bat`：杀掉旧进程并重启服务（直接用 .venv 的 python 跑 restart_service.py）
+- `launcher_windows/MyCodex-Restart.bat`：杀掉旧进程并重启服务（直接用 .venv 的 python 跑 restart_service.py）
 
-把 `MyCodex.bat`（右键 → 创建快捷方式）放到启动文件夹：
+把 `launcher_windows\MyCodex.bat`（右键 → 创建快捷方式）放到启动文件夹：
 
 ```
 Win+R → shell:startup → 回车 → 把快捷方式拖进去
@@ -567,7 +567,7 @@ netstat -ano | findstr :8090    # Windows
 
 ### 9.7 Windows 中文乱码 / 脚本编码
 
-安装与启动脚本（`MyCodex.bat` / `MyCodex-Setup.bat` / `MyCodex-Restart.bat` / `auto_feishu\setup.cmd`）统一为 **GBK(ANSI) 编码 + CRLF 换行，不带 `chcp`**。
+安装与启动脚本（`launcher_windows\*.bat` / `auto_feishu\setup.cmd`）统一为 **GBK(ANSI) 编码 + CRLF 换行，不带 `chcp`**。
 
 > ⚠️ 不要把这些脚本重新保存为 UTF-8：UTF-8 + `chcp 65001` 的 .bat 在 Win10/11 上有已知解析 bug（含中文的行会破坏下一行的执行，下一行被当命令报错）。编辑脚本务必用可按 ANSI/GBK 保存的编辑器。
 
@@ -599,7 +599,7 @@ mycodex/                              # 项目根目录
 │   ├── audit/logger.py              # JSON-lines 审计日志
 │   ├── models/schemas.py            # 数据模型
 │   └── state/preferences.py         # per-user 的 model/effort/mode 持久化
-├── examples/                        # 环境变量模板目录
+├── (examples/ 已并入 config/，模板为 config/env.example)
 │   └── .env.example                 #   .env 样例模板
 ├── logs/                            # 运行时日志目录
 │   ├── mycodex.log                   #   运行日志（10MB × 5 轮转）
@@ -622,11 +622,11 @@ mycodex/                              # 项目根目录
 │   ├── restart_service.py           # 重启服务工具
 │   ├── stop_mycodex.ps1             # 停止/清理残留进程
 │   ├── setup_autostart.bat          # Windows 开机自启快捷方式生成脚本
-│   ├── start.sh                     # Linux/Mac 启动脚本
+│   ├── (start.sh / verify_codex_sync.py 已清理)
 ├── doc/                             # 文档
 ├── .preferences/                    # per-user 运行时偏好（自动生成）
 ├── .sessions/                       # per-user session 路由状态（自动生成）
-├── MyCodex.bat / MyCodex-Restart.bat  # Windows 启动器
+├── launcher_windows/                  # Windows 客户入口（Setup/MyCodex/Restart）
 ├── pyproject.toml                   # Python 项目配置
 └── uv.lock                          # 依赖锁
 ```

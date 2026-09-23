@@ -110,19 +110,22 @@ def main() -> int:
     upsert_env("WECOM_SECRET", secret)
     print(f"✅ 已写入 {ENV_PATH}（WECOM_BOT_ID / WECOM_SECRET）")
 
-    userid = input("\n可选：输入你的企业微信 userid 加入白名单（wecom: 前缀，回车跳过）: ").strip()
-    if userid:
+    userid_input = input("\n可选：输入你的企业微信 userid 加入企微专属白名单（直接输入 userid，多个用逗号隔开，回车跳过表示全员可用）: ").strip()
+    if userid_input:
         existing = ""
         if ENV_PATH.exists():
             for line in ENV_PATH.read_text("utf-8").splitlines():
-                if line.startswith("ALLOWED_USERS="):
+                if line.startswith("WECOM_ALLOWED_USERS="):
                     existing = line.split("=", 1)[1].strip()
-        users = [u for u in existing.split(",") if u.strip()]
-        entry = f"wecom:{userid}"
-        if entry not in users:
-            users.append(entry)
-        upsert_env("ALLOWED_USERS", ",".join(users))
-        print(f"✅ 已把 {entry} 追加进 ALLOWED_USERS")
+        users = [u.strip() for u in existing.split(",") if u.strip()]
+        for u in userid_input.split(","):
+            u = u.strip()
+            if u.startswith("wecom:"):
+                u = u[len("wecom:"):].strip()
+            if u and u not in users:
+                users.append(u)
+        upsert_env("WECOM_ALLOWED_USERS", ",".join(users))
+        print(f"✅ 已把 {','.join(users)} 写入 WECOM_ALLOWED_USERS")
         print("   提示：首次给机器人发消息后，日志中会打印你的 userid，可据此核对。")
 
     print("\n全部完成。请运行 MyCodex-Restart.bat 重启服务使企微通道生效，")

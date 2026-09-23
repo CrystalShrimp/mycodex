@@ -8,10 +8,10 @@ echo.
 
 set "STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "NEW_LNK=%STARTUP_DIR%\MyCodex.lnk"
-set "MYCODEX_BAT=%~dp0..\MyCodex.bat"
+set "MYCODEX_BAT=%~dp0..\launcher_windows\MyCodex.bat"
 
 if not exist "%MYCODEX_BAT%" (
-    echo [ERROR] MyCodex.bat not found in parent directory!
+    echo [ERROR] MyCodex.bat not found in launcher_windows!
     echo Please run this script from MyCodex scripts directory.
     echo.
     pause

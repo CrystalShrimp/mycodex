@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 if not exist ".venv\Scripts\python.exe" (
     echo [ERROR] 未找到 .venv\Scripts\python.exe
@@ -15,7 +15,7 @@ if not exist ".env" (
 )
 
 echo [1/3] 停止并清理 MyCodex 进程...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\stop_mycodex.ps1" -CallerPid 0
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\scripts\stop_mycodex.ps1" -CallerPid 0
 ping -n 3 127.0.0.1 >nul
 
 echo [2/3] 正在启动 MyCodex...

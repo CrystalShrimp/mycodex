@@ -1,8 +1,8 @@
 {
-    "name":  "mycodex-feishu-setup",
+    "name":  "myclaw-feishu-setup",
     "version":  "1.0.0",
     "private":  true,
-    "description":  "One-login Feishu Open Platform delivery automation for mycodex",
+    "description":  "One-login Feishu Open Platform delivery automation for myclaw",
     "scripts":  {
                     "feishu:setup":  "tsx src/feishu-setup.ts",
                     "feishu:setup:debug":  "tsx src/feishu-setup.ts --debug",
@@ -10,9 +10,9 @@
                     "typecheck":  "tsc --noEmit",
                     "install:browser":  "playwright install chromium"
                 },
-    "dependencies":  {
-                         "playwright":  "^1.53.2"
-                     },
+    "dependencies": {
+        "playwright": "^1.63.0"
+    },
     "devDependencies":  {
                             "@types/node":  "^24.0.0",
                             "tsx":  "^4.20.0",

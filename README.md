@@ -15,15 +15,15 @@
 **Windows**
 1. **前置**：终端运行 `codex login` 完成 ChatGPT 账号登录（键入 `codex` 能启动即具备条件）；
 2. **首次配置飞书机器人**：进入 `auto_feishu/` 目录运行 `setup.cmd`，按提示完成一次飞书账号登录即可（详见 [auto_feishu/README.md](auto_feishu/README.md)）；
-3. **启动服务**：双击项目根目录的 `MyCodex.bat`，任务栏出现托盘图标即表示启动成功；
+3. **启动服务**：双击 `launcher_windows\MyCodex.bat`，任务栏出现托盘图标即表示启动成功；
 4. **在飞书中发消息**给机器人，按引导完成模型、推理强度和执行模式配置后即可使用。
 
-代码或配置更新后，使用 `MyCodex-Restart.bat` 重启。
+代码或配置更新后，使用 `launcher_windows\MyCodex-Restart.bat` 重启。
 
 **macOS**
 ```bash
-bash setup-mac.sh          # 一次性安装：uv 依赖、.env 模板、codex 检查
-open MyCodex.command       # 双击启动（停旧→后台起服务→健康检查）
+bash launcher_macos/MyCodex-Setup.command   # 一次性安装：uv 依赖、.env 模板、codex 检查
+open launcher_macos/MyCodex.command  # 双击启动（停旧→后台起服务→健康检查）
 # 可选：
 bash scripts/setup_autostart_mac.sh                    # 开机自启 (launchd)
 .venv/bin/pip install rumps && .venv/bin/python scripts/menubar.py   # 菜单栏
@@ -47,7 +47,7 @@ bash scripts/setup_autostart_mac.sh                    # 开机自启 (launchd)
 | 文档 | 面向读者 | 内容 |
 |---|---|---|
 | [doc/input.md](doc/input.md) | 产品 / 研究 | 项目定位、核心能力、使用流程（部分内容仍为 Claude 时代版本，待更新） |
-| [CLAUDEME.md](CLAUDEME.md) | 部署 Agent | 单机部署工程指南（部分内容仍为 Claude 时代版本，待更新） |
+| [doc/CLAUDEME.md](doc/CLAUDEME.md) | 部署 Agent | 单机部署工程指南（部分内容仍为 Claude 时代版本，待更新） |
 | [auto_feishu/README.md](auto_feishu/README.md) | 客户 | 飞书一键配置脚本的使用与失败恢复 |
 
 ## 目录结构
@@ -55,16 +55,17 @@ bash scripts/setup_autostart_mac.sh                    # 开机自启 (launchd)
 ```
 app/            后端 FastAPI 服务（事件分发、卡片、Codex CLI 调度）
 auto_feishu/    飞书一键配置子模块（TypeScript + Playwright）
-config/         服务设置（settings.py）
+config/         服务设置（settings.py）与 .env 模板（env.example）
+launcher_windows/ Windows 客户入口（Setup/MyCodex/Restart）
+launcher_macos/   macOS 客户入口
 doc/            产品文档
-examples/       `.env` 模板
 logs/           运行日志（mycodex.log、audit.log）和会话状态
 scripts/        托盘程序、重启脚本、开机自启等
 ```
 
 ## 配置入口
 
-- **`.env`**：从 `examples/.env.example` 复制。包含飞书凭据、`ALLOWED_USERS` 访问白名单、默认工作区、服务端口（8090）等；
+- **`.env`**：从 `config/env.example` 复制。包含飞书凭据、`ALLOWED_USERS` 访问白名单、默认工作区、服务端口（8090）等；
 - **`icon.png` / `icon.jpg` / `icon.ico`**（可选）：放到项目根目录可自定义托盘图标，缺失时使用系统默认图标。
 
 ## 路线图

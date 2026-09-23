@@ -206,11 +206,11 @@ class FeishuChannel:
             return True
         if mode == "creator":
             return bool(settings.allowed_creator.strip()) and open_id == settings.allowed_creator.strip()
-        # list / 旧配置：原始名单为空 = 全员；非空时只认本平台条目
-        # （无前缀=飞书；wecom:xxx=企微，过滤后为空则本平台全拒）
-        if not settings.get_allowed_users():
+        # list / 默认模式：飞书白名单为空 = 飞书全员开放；非空时仅名单内 open_id 可用
+        feishu_allowed = settings.get_allowed_users_for("feishu")
+        if not feishu_allowed:
             return True
-        return open_id in settings.get_allowed_users_for("feishu")
+        return open_id in feishu_allowed
 
     async def is_allowed(self, target: UserTarget) -> bool:
         open_id = target.user_id

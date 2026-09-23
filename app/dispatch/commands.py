@@ -119,13 +119,16 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
                 f"`ALLOWED_GROUP_IDS` 中调整群列表。"
             )
         else:
-            allowed_list = settings.get_allowed_users()
+            is_wecom = (target.platform == "wecom")
+            key_name = "WECOM_ALLOWED_USERS" if is_wecom else "ALLOWED_USERS"
+            allowed_list = settings.get_allowed_users_for(target.platform)
+            platform_name = "企业微信" if is_wecom else "飞书"
             err_msg = (
                 f"🚫 **权限拦截提醒**\n"
                 f"• 您的用户 ID: `{open_id or '(空)'}`\n"
-                f"• 当前允许的用户列表: `{', '.join(allowed_list) if allowed_list else '(空，未配置白名单)'}`\n\n"
-                f"💡 **解决建议**：请在 `.env` 中把您的用户 ID 加入 `ALLOWED_USERS`；"
-                f"如需对所有用户开放，请把 `.env` 中的 `ALLOWED_USERS` 设为空。"
+                f"• 当前允许的{platform_name}用户列表: `{', '.join(allowed_list) if allowed_list else '(空，未配置白名单)'}`\n\n"
+                f"💡 **解决建议**：请在 `.env` 中把您的用户 ID 加入 `{key_name}`；"
+                f"如需对所有{platform_name}用户开放，请把 `.env` 中的 `{key_name}` 设为空。"
             )
         await reply.text(err_msg)
         return
@@ -621,6 +624,7 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workspace,
+                start_new_session=(sys.platform != "win32"),
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
             out = _decode_output(stdout).strip()

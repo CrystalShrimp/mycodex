@@ -12,7 +12,6 @@ wheels/
 # Environment & secrets
 .env
 .env.*
-!.env.example
 api.txt
 
 # Legacy provider profile files (architecture removed — models now come from

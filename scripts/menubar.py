@@ -52,7 +52,7 @@ def start_server() -> None:
         return
     python = ROOT / ".venv" / "bin" / "python"
     if not python.exists():
-        print(f"[ERROR] 未找到 {python}，请先运行 setup-mac.sh")
+        print(f"[ERROR] 未找到 {python}，请先运行 MyCodex-Setup.command")
         return
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with LOG_PATH.open("ab") as log:
