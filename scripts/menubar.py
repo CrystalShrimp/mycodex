@@ -90,6 +90,14 @@ def stop_service_by_port() -> None:
         pass
 
 
+def _find_icon() -> str | None:
+    for name in ("icon.png", "icon.jpg", "icon.ico"):
+        p = ROOT / name
+        if p.exists():
+            return str(p.resolve())
+    return None
+
+
 def main() -> None:
     try:
         import rumps
@@ -99,17 +107,27 @@ def main() -> None:
         sys.exit(1)
 
     start_server()
+    icon_path = _find_icon()
 
     class MyCodexMenubar(rumps.App):
         def __init__(self):
-            super().__init__("mycodex", title="◐", quit_button=None)
+            init_title = "●" if icon_path else "MyCodex ●"
+            super().__init__(
+                "mycodex",
+                title=init_title,
+                icon=icon_path,
+                template=False if icon_path else None,
+                quit_button=None,
+            )
             self.menu = [
                 rumps.MenuItem("查看状态", callback=self.on_status),
                 rumps.MenuItem("打开日志", callback=self.on_log),
                 None,
                 rumps.MenuItem("退出 mycodex", callback=self.on_quit),
             ]
-            rumps.timer(self.on_tick, 5)
+            self._timer = rumps.Timer(self.on_tick, 5)
+            self._timer.start()
+            self.on_tick(None)
 
         def _status_detail(self) -> str:
             try:
@@ -132,7 +150,11 @@ def main() -> None:
                 return f"❌ 后端未响应 ({SERVICE_PORT} 端口): {e}\n详情请查看 logs/macos-service.log"
 
         def on_tick(self, _sender):
-            self.title = "●" if healthy() else "○"
+            ok = healthy()
+            if icon_path:
+                self.title = "●" if ok else "○"
+            else:
+                self.title = "MyCodex ●" if ok else "MyCodex ○"
 
         def on_status(self, _sender):
             rumps.alert(self._status_detail())

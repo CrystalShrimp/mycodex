@@ -111,5 +111,10 @@ mac_start_menubar() {
         return 0
     fi
     (cd "$MAC_ROOT" && nohup "$py" "$MAC_ROOT/scripts/menubar.py" >>"$MAC_SERVICE_LOG" 2>&1 &)
-    echo "[INFO] 菜单栏已启动（屏幕顶部 mycodex 图标：● 正常 / ○ 异常）。"
+    sleep 1
+    if pgrep -f "[s]cripts/menubar.py" >/dev/null 2>&1; then
+        echo "[OK] 菜单栏已启动（屏幕右上角状态栏显示项目图标与 ● 状态；若刘海屏图标过多被遮挡，可关闭部分其它顶栏图标查看）。"
+    else
+        echo "[WARN] 菜单栏进程未能保持常驻，请查看 logs/macos-service.log 了解原因。"
+    fi
 }
