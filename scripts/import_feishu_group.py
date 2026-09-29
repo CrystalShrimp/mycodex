@@ -147,6 +147,36 @@ def main() -> int:
         return 1
     print("✅ 飞书应用鉴权通过！\n")
 
+    # 读取现有白名单
+    current_allowed = env_vars.get("ALLOWED_USERS", "")
+    existing_list = [u.strip() for u in current_allowed.split(",") if u.strip()]
+    wecom_users = [u[len("wecom:"):].strip() for u in existing_list if u.startswith("wecom:")]
+    feishu_users = [u for u in existing_list if not u.startswith("wecom:")]
+
+    # 自动迁移残留的企微白名单至 WECOM_ALLOWED_USERS
+    if wecom_users:
+        existing_wecom = env_vars.get("WECOM_ALLOWED_USERS", "")
+        wecom_list = [u.strip() for u in existing_wecom.split(",") if u.strip()]
+        for u in wecom_users:
+            if u not in wecom_list:
+                wecom_list.append(u)
+        upsert_env("WECOM_ALLOWED_USERS", ",".join(wecom_list))
+        print(f"ℹ️ 检测到历史残留的企微白名单，已自动平滑迁移至 WECOM_ALLOWED_USERS ({len(wecom_list)} 人)")
+
+    # 选择操作分支：重置群成员名单 vs 添加新的群成员名单
+    print(f"当前已配置飞书白名单人数: {len(feishu_users)} 人")
+    print("请选择操作模式：")
+    print("  [1] 重置群成员名单（清空旧名单，仅保留本次所选群成员）")
+    print("  [2] 添加新的群成员名单（在现有白名单基础上，追加合并新群成员）")
+    print("  [0] 取消并返回")
+    mode_choice = input("请选择 [1/2/0] (直接回车默认 1): ").strip()
+    if mode_choice == "0":
+        print("已取消操作。")
+        return 0
+    is_append_mode = mode_choice == "2"
+    mode_desc = "添加新的群成员名单（追加合并）" if is_append_mode else "重置群成员名单（覆盖原有）"
+    print(f"→ 已选定模式：{mode_desc}\n")
+
     target_chat_id = ""
     if len(sys.argv) > 1 and sys.argv[1].strip():
         target_chat_id = sys.argv[1].strip()
@@ -195,34 +225,24 @@ def main() -> int:
     preview_count = min(len(members), 5)
     print(f"   预览前 {preview_count} 名: {', '.join(members[:preview_count])}{'...' if len(members) > preview_count else ''}")
 
-    # 读取现有白名单并合并
-    current_allowed = env_vars.get("ALLOWED_USERS", "")
-    existing_list = [u.strip() for u in current_allowed.split(",") if u.strip()]
-    wecom_users = [u[len("wecom:"):].strip() for u in existing_list if u.startswith("wecom:")]
-    feishu_users = [u for u in existing_list if not u.startswith("wecom:")]
+    final_members: list[str] = []
+    if is_append_mode:
+        for u in feishu_users:
+            if u not in final_members:
+                final_members.append(u)
+        for m in members:
+            if m not in final_members:
+                final_members.append(m)
+    else:
+        final_members = list(members)
 
-    # 自动迁移残留的企微白名单至 WECOM_ALLOWED_USERS
-    if wecom_users:
-        existing_wecom = env_vars.get("WECOM_ALLOWED_USERS", "")
-        wecom_list = [u.strip() for u in existing_wecom.split(",") if u.strip()]
-        for u in wecom_users:
-            if u not in wecom_list:
-                wecom_list.append(u)
-        upsert_env("WECOM_ALLOWED_USERS", ",".join(wecom_list))
-        print(f"ℹ️ 检测到历史残留的企微白名单，已自动平滑迁移至 WECOM_ALLOWED_USERS ({len(wecom_list)} 人)")
-
-    if feishu_users:
-        print(f"\n当前 .env 中已有 {len(feishu_users)} 名飞书白名单用户。")
-        merge_choice = input("是否保留原有白名单用户？[Y/N] (Y=追加合并，N=以本次群成员覆盖，默认 Y): ").strip().lower()
-        if merge_choice != "n":
-            for u in feishu_users:
-                if u not in members:
-                    members.append(u)
-
-    upsert_env("ALLOWED_USERS", ",".join(members))
+    upsert_env("ALLOWED_USERS", ",".join(final_members))
 
     print("\n" + "=" * 60)
-    print(f"🎉 成功将 {len(members)} 名飞书群成员写入 .env 的 ALLOWED_USERS！")
+    if is_append_mode:
+        print(f"🎉 已追加新群成员！当前飞书白名单共 {len(final_members)} 人已写入 .env 的 ALLOWED_USERS。")
+    else:
+        print(f"🎉 已重置群成员名单！共 {len(final_members)} 名群成员已写入 .env 的 ALLOWED_USERS。")
     print("💡 提示：若服务正在运行，请执行重启服务使新名单生效。")
     print("=" * 60)
     return 0
