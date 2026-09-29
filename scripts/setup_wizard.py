@@ -245,7 +245,8 @@ def configure_initial_preferences():
     # 1. Model
     print(f"\n  [1/3] 选择默认模型 (Model) [当前默认: {default_model}]:")
     for idx, k in enumerate(model_keys, 1):
-        label = models[k].label if k in models else k
+        m_info = models.get(k)
+        label = (m_info.get("label", k) if isinstance(m_info, dict) else getattr(m_info, "label", k)) if m_info else k
         mark = " (默认)" if k == default_model else ""
         print(f"    {idx}. {k} - {label}{mark}")
     raw_m = input(f"  请选择序号或模型名称 (直接回车 = {default_model}): ").strip()
