@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings>=2.7.0",
     "python-dotenv>=1.0.0",
     "lark-oapi>=1.4.0",
+    "rumps>=0.4.0; sys_platform == 'darwin'",
 ]
 
 [dependency-groups]

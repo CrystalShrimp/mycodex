@@ -7,6 +7,7 @@ MyCodex 跨平台交互配置向导。
 
 import os
 import sys
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -30,6 +31,9 @@ if sys.platform == "win32":
         pass
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
+# 以 python scripts/setup_wizard.py 方式启动时 sys.path[0] 是 scripts/ 目录，
+# `from scripts.import_feishu_group import ...` 需要项目根目录在搜索路径上
+sys.path.insert(0, str(ROOT_DIR))
 
 
 def run_cmd(cmd: list[str], cwd: Path | None = None, check: bool = False, env: dict | None = None) -> int:
@@ -258,6 +262,74 @@ def ensure_playwright_chromium(auto_feishu_dir: Path) -> bool:
     return code == 0
 
 
+def fetch_app_creator_open_id(app_id: str, app_secret: str) -> str:
+    """用应用自身凭据查创建者 open_id（application/v6/applications 的 creator_id）。
+
+    返回的 open_id 与消息事件里发送者的 open_id 同为该应用作用域，可直接进白名单。
+    """
+    import urllib.request
+
+    def call(method: str, url: str, body: dict | None = None, headers: dict | None = None) -> dict:
+        import urllib.error
+
+        h = {"Content-Type": "application/json; charset=utf-8"}
+        if headers:
+            h.update(headers)
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode() if body else None,
+            headers=h,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            # 飞书的 4xx 带 JSON 错误体，读出来才有 code/msg 可判
+            try:
+                return json.loads(e.read())
+            except Exception:
+                raise
+
+    tok = call(
+        "POST",
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        {"app_id": app_id, "app_secret": app_secret},
+    )["tenant_access_token"]
+    # 该接口必须带 lang 参数，否则直接 400
+    info = call(
+        "GET",
+        f"https://open.feishu.cn/open-apis/application/v6/applications/{app_id}?lang=zh_cn",
+        headers={"Authorization": "Bearer " + tok},
+    )
+    if info.get("code") != 0:
+        raise RuntimeError(f"code={info.get('code')} {info.get('msg')}")
+    return (info.get("data", {}).get("app", {}) or {}).get("creator_id", "")
+
+
+def apply_personal_allowlist():
+    """个人用模式收尾：把应用创建者的 open_id 写入 ALLOWED_USERS（名单里明确只放本人）。"""
+    app_id = get_env_value("FEISHU_APP_ID")
+    app_secret = get_env_value("FEISHU_APP_SECRET")
+    if not app_id or not app_secret or app_id.startswith("cli_x"):
+        print("[!] .env 中缺少有效的飞书凭据，未改动 ALLOWED_USERS。")
+        return
+
+    try:
+        creator = fetch_app_creator_open_id(app_id, app_secret)
+    except Exception as e:
+        print(f"[!] 查询应用创建者失败（{e}），未改动 ALLOWED_USERS。")
+        return
+    if not creator:
+        print("[!] 未获取到应用创建者 open_id，未改动 ALLOWED_USERS。")
+        return
+
+    from scripts.import_feishu_group import upsert_env
+    upsert_env("ALLOWED_USERS", creator)
+    print(f"[OK] 个人用模式：ALLOWED_USERS 已写入应用创建者 {creator}（名单里明确仅本人可用）。")
+    print("     若服务正在运行，请重启服务使配置生效。")
+
+
 def setup_feishu(mode: str):
     """直接使用 npm 直驱执行 auto_feishu 自动化，无中间层，杜绝二次询问与参数丢失。"""
     auto_feishu_dir = ROOT_DIR / "auto_feishu"
@@ -288,8 +360,47 @@ def setup_feishu(mode: str):
     code = run_cmd(npm_cmd, cwd=auto_feishu_dir, env=custom_env)
     if code == 0:
         print(f"[OK] 飞书{mode_label}模式自动化配置完成。")
+        if mode == "personal":
+            apply_personal_allowlist()
     else:
         print(f"[!] 飞书自动化配置退出，返回码: {code}")
+
+
+def setup_wecom_auto():
+    """企业微信自动化配置：auto_wecom 浏览器自动化（扫码登录→复用/创建机器人→读凭据）+ WS 长连接实测。"""
+    auto_dir = ROOT_DIR / "auto_wecom"
+    if not auto_dir.exists():
+        print("[ERROR] 未找到 auto_wecom 自动化目录。")
+        return
+
+    node_modules = auto_dir / "node_modules"
+    if not (node_modules / "playwright").exists():
+        print("[*] 依赖缺失，正在安装依赖 (npm install)...")
+        run_cmd(["npm", "install", "--no-audit", "--no-fund"], cwd=auto_dir)
+    ensure_playwright_chromium(auto_dir)
+
+    print("[*] 正在执行企业微信自动化配置（会打开浏览器，需用企业微信 App 扫码登录管理后台）...")
+    code = run_cmd(["npm", "run", "wecom:setup"], cwd=auto_dir)
+    if code != 0:
+        print(f"[!] 企业微信自动化配置退出，返回码: {code}")
+        return
+
+    # WS 长连接实测（复用 setup_wecom.py 的 test_connection；会短暂挤掉旧连接，服务自动重连）
+    bot_id = get_env_value("WECOM_BOT_ID")
+    secret = get_env_value("WECOM_SECRET")
+    if bot_id and secret:
+        import asyncio
+
+        from scripts.setup_wecom import test_connection
+        print("[*] 正在实测长连接（订阅 + 心跳）...")
+        ok, detail = asyncio.run(test_connection(bot_id, secret))
+        if ok:
+            print(f"[OK] 长连接实测通过：{detail}")
+            print("     若服务正在运行，请重启服务使企微通道生效，然后在企业微信里给机器人发 /help 验证。")
+        else:
+            print(f"[!] 长连接实测失败：{detail}（请核对机器人详情页配置方式为长连接）")
+    else:
+        print("[!] 未在 .env 中检测到 WECOM_BOT_ID/WECOM_SECRET，跳过长连接实测。")
 
 
 def ask_group_import():
@@ -324,6 +435,72 @@ def configure_autostart():
         run_cmd(["bash", str(autostart_script)])
 
 
+def collect_init_status() -> dict:
+    """收集前三步初始化状态（工作空间 / 运行环境 / Codex 认证）。"""
+    workspace = get_env_value("DEFAULT_WORKSPACE")
+
+    node_version = ""
+    if shutil.which("node"):
+        try:
+            node_version = subprocess.check_output(["node", "-v"], text=True).strip()
+        except Exception:
+            node_version = "(已安装)"
+    codex_ready = shutil.which("codex") is not None
+
+    auth_file = Path.home() / ".codex" / "auth.json"
+    auth_ready = auth_file.exists() and auth_file.stat().st_size > 10
+
+    return {
+        "workspace": workspace,
+        "workspace_done": bool(workspace.strip()),
+        "node_version": node_version,
+        "codex_ready": codex_ready,
+        "environment_done": bool(node_version) and codex_ready,
+        "auth_ready": auth_ready,
+        "model_done": auth_ready,
+    }
+
+
+def run_init_steps(force: bool = False):
+    """执行前三步初始化。force=True 全部重跑；否则只补跑未完成的步骤。"""
+    status = collect_init_status()
+    steps = [
+        ("workspace", "工作空间", confirm_workspaces),
+        ("environment", "运行环境", check_environment),
+        ("model", "Codex 认证", check_or_setup_models),
+    ]
+    for key, label, fn in steps:
+        if force or not status[f"{key}_done"]:
+            fn()
+        else:
+            print(f"[OK] {label}已完成初始化，跳过。")
+
+
+def show_init_config():
+    """查看前三步初始化配置信息，可选择重跑。"""
+    status = collect_init_status()
+    print("\n" + "=" * 60)
+    print("        初始化配置信息（Step 1-3 初始化设置）")
+    print("=" * 60)
+    print()
+    print("  【Step 1 工作空间】")
+    print(f"    DEFAULT_WORKSPACE = {status['workspace'] or '(未配置)'}")
+    print("  【Step 2 运行环境】")
+    print(f"    Node.js     : {status['node_version'] or '未检测到（auto_feishu 需要 v20+）'}")
+    print(f"    Codex CLI   : {'已就绪' if status['codex_ready'] else '未检测到'}")
+    print("  【Step 3 Codex 账号认证】")
+    print(f"    ChatGPT 登录态 (~/.codex/auth.json) : {'已就绪' if status['auth_ready'] else '未检测到'}")
+    print()
+
+    if status["workspace_done"] and status["environment_done"] and status["model_done"]:
+        print("  [OK] 初始化设置已全部完成。")
+    else:
+        print("  [!] 存在未完成的初始化项。")
+    choice = input("[?] 是否重新运行初始化设置（Step 1-3）？[y/N] (直接回车 = 否): ").strip().lower()
+    if choice == "y":
+        run_init_steps(force=True)
+
+
 def main_menu():
     """【Step 4/4】消息平台接入与配置中心。"""
     while True:
@@ -335,18 +512,19 @@ def main_menu():
         print(" 2. 配置飞书 - 公用（可用范围全员，支持群成员一键导入白名单）")
         print(" 3. 飞书群成员一键导入白名单（日常维护工具）")
         print("\n【企业微信接入】")
-        print(" 4. 配置企业微信（长连接自建应用 + 连通实测）")
-        print("\n【组合与授权管理】")
+        print(" 4. 配置企业微信（浏览器自动化：扫码登录→复用/创建机器人→凭据写入 + 长连接实测）")
         print(" 5. 完整配置（飞书公用 + 企业微信）")
+        print("\n【账号授权】")
         print(" 6. Codex 认证管理（登录/切换 ChatGPT 账号）")
         print("\n【系统】")
         print(" 7. 配置开机自启（每次开机自动静默后台运行）")
+        print(" 8. 查看初始化配置（工作空间/运行环境/Codex 认证）")
         print("\n【退出】")
         print(" 0. 退出向导（完成并显示启动说明）")
         print()
 
         try:
-            choice = input("请选择 [0/1/2/3/4/5/6/7]: ").strip()
+            choice = input("请选择 [0-8]: ").strip()
         except (KeyboardInterrupt, EOFError):
             print("\n已退出。")
             break
@@ -359,16 +537,18 @@ def main_menu():
         elif choice == "3":
             run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "import_feishu_group.py")])
         elif choice == "4":
-            run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "setup_wecom.py")])
+            setup_wecom_auto()
         elif choice == "5":
             setup_feishu("public")
             ask_group_import()
             print("\n[*] 接下来进入企业微信配置...")
-            run_cmd([sys.executable, str(ROOT_DIR / "scripts" / "setup_wecom.py")])
+            setup_wecom_auto()
         elif choice == "6":
             run_cmd(["codex", "login"])
         elif choice == "7":
             configure_autostart()
+        elif choice == "8":
+            show_init_config()
         elif choice in ("0", "q", "exit"):
             finish_setup()
             break
@@ -394,9 +574,12 @@ def finish_setup():
 
 if __name__ == "__main__":
     os.chdir(ROOT_DIR)
-    # 4 步极简引导流
-    confirm_workspaces()
-    check_environment()
-    check_or_setup_models()
+    # 前三步为一次性初始化：已完成则跳过，直接进入 Step 4 配置中心
+    status = collect_init_status()
+    if status["workspace_done"] and status["environment_done"] and status["model_done"]:
+        print("[OK] 初始化设置已完成（工作空间 / 运行环境 / Codex 认证），跳过 Step 1-3。")
+        print("     （如需查看或重新配置初始化项：配置中心选 8）")
+    else:
+        run_init_steps()
     main_menu()
 

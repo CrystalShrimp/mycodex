@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""macOS 菜单栏常驻（可选，等价 Windows 的 tray.pyw）。
+"""macOS 菜单栏常驻（默认集成，等价 Windows 的 tray.pyw）。
 
-依赖 rumps（仅 macOS 可装）：
-    .venv/bin/pip install rumps
+依赖 rumps 随 Setup 的 uv sync 自动安装（仅 macOS，pyproject 带 darwin 标记）；
+由 restart_mac.sh / start_mac.sh 在服务健康后自动拉起，未装组件时降级为纯后台服务。
 
 行为：菜单栏图标实时反映后端健康状态；点击菜单可查看状态、打开日志、
-退出（退出时停止后端子进程）。
+退出（退出时连同后台服务一起停止）。
 """
 from __future__ import annotations
 
@@ -72,12 +72,28 @@ def start_server() -> None:
         time.sleep(0.5)
 
 
+def stop_service_by_port() -> None:
+    """服务由外部（restart_mac.sh）启动时，按端口兜底停止，保持与 Windows 托盘退出一致。"""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["lsof", "-ti", f"tcp:{SERVICE_PORT}", "-sTCP:LISTEN"],
+            capture_output=True, text=True,
+        ).stdout
+        for pid in out.split():
+            if pid.isdigit():
+                subprocess.run(["kill", pid], capture_output=True)
+    except Exception:
+        pass
+
+
 def main() -> None:
     try:
         import rumps
     except ImportError:
-        print("缺少 rumps（macOS 菜单栏框架）。安装：.venv/bin/pip install rumps")
-        print("或不使用菜单栏，直接双击 MyCodex.command 以后台方式运行。")
+        print("缺少 rumps（macOS 菜单栏框架）。安装：重跑 MyCodex-Setup.command（uv sync 自动安装）。")
+        print("或直接双击 MyCodex.command 以后台方式运行。")
         sys.exit(1)
 
     start_server()
@@ -121,6 +137,8 @@ def main() -> None:
                     os.killpg(os.getpgid(server.pid), signal.SIGTERM)
                 except Exception:
                     server.terminate()
+            else:
+                stop_service_by_port()
             rumps.quit_application()
 
     MyCodexMenubar().run()

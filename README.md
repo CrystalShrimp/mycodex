@@ -22,11 +22,10 @@
 
 **macOS**
 ```bash
-bash launcher_macos/MyCodex-Setup.command   # 一次性安装：uv 依赖、.env 模板、codex 检查
-open launcher_macos/MyCodex.command  # 双击启动（停旧→后台起服务→健康检查）
+bash launcher_macos/MyCodex-Setup.command   # 一次性安装：uv 依赖（含菜单栏组件）、.env 模板、codex 检查
+open launcher_macos/MyCodex.command  # 双击启动（停旧→后台起服务→健康检查→菜单栏图标）
 # 可选：
-bash scripts/setup_autostart_mac.sh                    # 开机自启 (launchd)
-.venv/bin/pip install rumps && .venv/bin/python scripts/menubar.py   # 菜单栏
+bash scripts/setup_autostart_mac.sh                    # 开机自启 (launchd，含菜单栏)
 ```
 
 健康检查地址：`http://127.0.0.1:8090/health`。

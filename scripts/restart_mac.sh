@@ -8,3 +8,4 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 sleep 1
 mac_start_service
 mac_wait_healthy 60
+mac_start_menubar

@@ -27,15 +27,14 @@ if ! command -v uv >/dev/null 2>&1; then
     }
 fi
 
-# 2. Ensure Python virtual environment (.venv)
-if [ ! -x ".venv/bin/python" ]; then
-    echo "[*] Initializing Python virtual environment via uv sync..."
-    uv sync || {
-        echo "[ERROR] uv sync failed. Please check your internet connection."
-        read -r -p "Press Enter to exit..." _
-        exit 1
-    }
-fi
+# 2. Ensure/sync Python virtual environment (.venv)
+# 每次都 uv sync（幂等）：已有环境快速校验并补装新增依赖（如 macOS 菜单栏组件 rumps）
+echo "[*] Syncing Python virtual environment via uv sync..."
+uv sync || {
+    echo "[ERROR] uv sync failed. Please check your internet connection."
+    read -r -p "Press Enter to exit..." _
+    exit 1
+}
 
 # 3. Run cross-platform setup wizard
 ".venv/bin/python" scripts/setup_wizard.py

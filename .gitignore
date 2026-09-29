@@ -68,3 +68,10 @@ audit.log
 # Subproject secrets & txt files
 auto_feishu/*.txt
 
+# WeCom setup runtime artifacts and credentials
+auto_wecom/wecom-bot-result.json
+auto_wecom/artifacts/
+auto_wecom/node_modules/
+auto_wecom/dist/
+auto_wecom/*.log
+

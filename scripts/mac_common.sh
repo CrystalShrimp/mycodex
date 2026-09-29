@@ -94,3 +94,22 @@ mac_wait_healthy() {
     echo "[WARN] ${tries}s 内服务未就绪，请查看 logs/macos-service.log 排障。" >&2
     return 1
 }
+
+mac_start_menubar() {
+    # 默认拉起菜单栏（等价 Windows 托盘）。幂等：已在运行则跳过；
+    # 未安装 rumps（如旧环境未重跑 Setup）时降级为纯后台服务并给出提示。
+    # 用绝对路径启动，保证 mac_stop_service 能按项目根匹配到并停止它。
+    local py
+    py="$(mac_python)"
+    [ -x "$py" ] || return 0
+    if pgrep -f "[s]cripts/menubar.py" >/dev/null 2>&1; then
+        echo "[INFO] 菜单栏已在运行，跳过。"
+        return 0
+    fi
+    if ! "$py" -c "import rumps" >/dev/null 2>&1; then
+        echo "[HINT] 未安装菜单栏组件 rumps（重跑 MyCodex-Setup.command 可安装）；本次以后台服务方式运行。"
+        return 0
+    fi
+    (cd "$MAC_ROOT" && nohup "$py" "$MAC_ROOT/scripts/menubar.py" >>"$MAC_SERVICE_LOG" 2>&1 &)
+    echo "[INFO] 菜单栏已启动（屏幕顶部 mycodex 图标：● 正常 / ○ 异常）。"
+}

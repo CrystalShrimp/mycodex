@@ -6,7 +6,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 
 if mac_healthy; then
     echo "[INFO] 服务已在运行，无需重复启动。"
-    exit 0
+else
+    mac_start_service
+    mac_wait_healthy 60
 fi
-mac_start_service
-mac_wait_healthy 60
+# 登录/自启场景同样拉起菜单栏（幂等，未装组件时自动降级）
+mac_start_menubar

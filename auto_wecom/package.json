@@ -1,0 +1,23 @@
+{
+    "name": "mycodex-wecom-setup",
+    "version": "1.0.0",
+    "private": true,
+    "description": "One-login WeCom smart-bot (long-connection) delivery automation for mycodex",
+    "scripts": {
+        "wecom:setup": "tsx src/wecom-setup.ts",
+        "wecom:setup:debug": "tsx src/wecom-setup.ts --debug",
+        "typecheck": "tsc --noEmit",
+        "install:browser": "playwright install chromium"
+    },
+    "dependencies": {
+        "playwright": "1.63.0"
+    },
+    "devDependencies": {
+        "@types/node": "^24.0.0",
+        "tsx": "^4.20.0",
+        "typescript": "^5.8.3"
+    },
+    "engines": {
+        "node": ">=20"
+    }
+}

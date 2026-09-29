@@ -124,7 +124,16 @@ class AutomationStepError extends Error {
 }
 
 const DEBUG_ENABLED = process.argv.includes("--debug");
-const PERSONAL_MODE = process.argv.includes("--personal") || (process.env.FEISHU_DEPLOY_MODE || "").trim().toLowerCase() === "personal";
+// 模式入参三种等价写法：--personal / --mode personal / 环境变量 FEISHU_DEPLOY_MODE
+const MODE_ARG = (() => {
+  const i = process.argv.indexOf("--mode");
+  if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1].trim().toLowerCase();
+  return "";
+})();
+const PERSONAL_MODE =
+  process.argv.includes("--personal") ||
+  MODE_ARG === "personal" ||
+  (process.env.FEISHU_DEPLOY_MODE || "").trim().toLowerCase() === "personal";
 const DEAD_PROXY_PATTERN = /^(?:https?:\/\/)?127\.0\.0\.1:6984\/?$/i;
 
 function clearDeadProxyEnvironment(logger: Logger): void {
@@ -2049,21 +2058,41 @@ async function importPermissions(ctx: StepContext): Promise<void> {
     ]);
   }
 
-  const importButton = await waitForEnabledAction(
+  // 权限导入入口有两种灰度 UI：旧版是独立的「批量导入」按钮；新版（2026-09 起）把它收进
+  // 「批量授权 ▾」/「批量处理 ▾」下拉菜单（实测菜单项：批量导入/导出权限、批量关闭权限）。
+  // 候选文案绝不能匹配「批量关闭权限」或「开通权限」，否则会走 destructive 路径。
+  let importButton = await waitForEnabledAction(
     ctx.page,
-    ["批量导入/导出权限", "批量导入", "导入权限", "导入"],
-    ctx.config.timeoutMs
+    ["批量导入/导出权限", "批量导入", "导入权限"],
+    Math.min(ctx.config.timeoutMs, 8000)
   );
+
   if (!importButton) {
-    await manualTakeover(ctx, "打开批量导入弹窗", [
-      "请手动点击“批量导入”按钮，打开权限导入弹窗。",
-      "弹窗出现后不要关闭浏览器。"
-    ]);
-  } else {
-    await importButton.locator.scrollIntoViewIfNeeded().catch(() => undefined);
-    await importButton.locator.click({ timeout: ctx.config.timeoutMs, force: true });
-    ctx.logger.debug(`已点击权限导入入口：${importButton.text}`);
+    const dropdown = await waitForEnabledAction(
+      ctx.page,
+      ["批量授权", "批量处理"],
+      Math.min(ctx.config.timeoutMs, 8000)
+    );
+    if (dropdown) {
+      await dropdown.locator.scrollIntoViewIfNeeded().catch(() => undefined);
+      await dropdown.locator.click({ timeout: ctx.config.timeoutMs, force: true });
+      ctx.logger.info(`已点击「${dropdown.text}」下拉按钮，等待菜单展开...`);
+      await ctx.page.waitForTimeout(1000);
+      importButton = await waitForEnabledAction(
+        ctx.page,
+        ["批量导入/导出权限", "批量导入", "导入"],
+        Math.min(ctx.config.timeoutMs, 10000)
+      );
+    }
   }
+
+  if (!importButton) {
+    throw new Error("未找到权限批量导入入口：既没有独立「批量导入」按钮，「批量授权/批量处理」下拉展开后也没有导入项。");
+  }
+
+  await importButton.locator.scrollIntoViewIfNeeded().catch(() => undefined);
+  await importButton.locator.click({ timeout: ctx.config.timeoutMs, force: true });
+  ctx.logger.info(`已点击权限导入入口：${importButton.text}`);
 
   const modal = await findVisibleModal(ctx.page, Math.min(ctx.config.timeoutMs, 5000));
   const formRoot = modal ?? ctx.page;
@@ -2182,21 +2211,41 @@ async function importPermissionsV2(ctx: StepContext): Promise<void> {
 
   await waitForAnyText(ctx.page, ["\u6279\u91cf\u5bfc\u5165", "\u6743\u9650\u7ba1\u7406", "\u5bfc\u5165\u6743\u9650"], ctx.config.timeoutMs);
 
-  const importButton = await waitForEnabledAction(
+  // \u6743\u9650\u5bfc\u5165\u5165\u53e3\u6709\u4e24\u79cd\u7070\u5ea6 UI\uff1a\u65e7\u7248\u662f\u72ec\u7acb\u7684\u300c\u6279\u91cf\u5bfc\u5165\u300d\u6309\u94ae\uff1b\u65b0\u7248\uff082026-09 \u8d77\uff09\u628a\u5b83\u6536\u8fdb
+  // \u300c\u6279\u91cf\u6388\u6743 \u25be\u300d/\u300c\u6279\u91cf\u5904\u7406 \u25be\u300d\u4e0b\u62c9\u83dc\u5355\uff08\u5b9e\u6d4b\u83dc\u5355\u9879\uff1a\u6279\u91cf\u5bfc\u5165/\u5bfc\u51fa\u6743\u9650\u3001\u6279\u91cf\u5173\u95ed\u6743\u9650\uff09\u3002
+  // \u5019\u9009\u6587\u6848\u7edd\u4e0d\u80fd\u5339\u914d\u300c\u6279\u91cf\u5173\u95ed\u6743\u9650\u300d\u6216\u300c\u5f00\u901a\u6743\u9650\u300d\uff0c\u5426\u5219\u4f1a\u8d70 destructive \u8def\u5f84\u3002
+  let importButton = await waitForEnabledAction(
     ctx.page,
-    ["\u6279\u91cf\u5bfc\u5165/\u5bfc\u51fa\u6743\u9650", "\u6279\u91cf\u5bfc\u5165", "\u5bfc\u5165\u6743\u9650", "\u5bfc\u5165"],
-    ctx.config.timeoutMs
+    ["\u6279\u91cf\u5bfc\u5165/\u5bfc\u51fa\u6743\u9650", "\u6279\u91cf\u5bfc\u5165", "\u5bfc\u5165\u6743\u9650"],
+    Math.min(ctx.config.timeoutMs, 8000)
   );
+
   if (!importButton) {
-    await manualTakeover(ctx, "\u6253\u5f00\u6279\u91cf\u5bfc\u5165\u5f39\u7a97", [
-      "\u8bf7\u624b\u52a8\u70b9\u51fb\u201c\u6279\u91cf\u5bfc\u5165\u201d\u6309\u94ae\uff0c\u6253\u5f00\u6743\u9650\u5bfc\u5165\u5f39\u7a97\u3002",
-      "\u5f39\u7a97\u51fa\u73b0\u540e\u4e0d\u8981\u5173\u95ed\u6d4f\u89c8\u5668\u3002"
-    ]);
-  } else {
-    await importButton.locator.scrollIntoViewIfNeeded().catch(() => undefined);
-    await importButton.locator.click({ timeout: ctx.config.timeoutMs, force: true });
-    ctx.logger.debug(`\u5df2\u70b9\u51fb\u6743\u9650\u5bfc\u5165\u5165\u53e3\uff1a${importButton.text}`);
+    const dropdown = await waitForEnabledAction(
+      ctx.page,
+      ["\u6279\u91cf\u6388\u6743", "\u6279\u91cf\u5904\u7406"],
+      Math.min(ctx.config.timeoutMs, 8000)
+    );
+    if (dropdown) {
+      await dropdown.locator.scrollIntoViewIfNeeded().catch(() => undefined);
+      await dropdown.locator.click({ timeout: ctx.config.timeoutMs, force: true });
+      ctx.logger.info(`\u5df2\u70b9\u51fb\u300c${dropdown.text}\u300d\u4e0b\u62c9\u6309\u94ae\uff0c\u7b49\u5f85\u83dc\u5355\u5c55\u5f00...`);
+      await ctx.page.waitForTimeout(1000);
+      importButton = await waitForEnabledAction(
+        ctx.page,
+        ["\u6279\u91cf\u5bfc\u5165/\u5bfc\u51fa\u6743\u9650", "\u6279\u91cf\u5bfc\u5165", "\u5bfc\u5165"],
+        Math.min(ctx.config.timeoutMs, 10000)
+      );
+    }
   }
+
+  if (!importButton) {
+    throw new Error("\u672a\u627e\u5230\u6743\u9650\u6279\u91cf\u5bfc\u5165\u5165\u53e3\uff1a\u65e2\u6ca1\u6709\u72ec\u7acb\u300c\u6279\u91cf\u5bfc\u5165\u300d\u6309\u94ae\uff0c\u300c\u6279\u91cf\u6388\u6743/\u6279\u91cf\u5904\u7406\u300d\u4e0b\u62c9\u5c55\u5f00\u540e\u4e5f\u6ca1\u6709\u5bfc\u5165\u9879\u3002");
+  }
+
+  await importButton.locator.scrollIntoViewIfNeeded().catch(() => undefined);
+  await importButton.locator.click({ timeout: ctx.config.timeoutMs, force: true });
+  ctx.logger.info(`\u5df2\u70b9\u51fb\u6743\u9650\u5bfc\u5165\u5165\u53e3\uff1a${importButton.text}`);
 
   const modal = await findVisibleModal(ctx.page, Math.min(ctx.config.timeoutMs, 5000));
   const formRoot = modal ?? ctx.page;
@@ -2363,32 +2412,47 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
     const url = `https://open.feishu.cn/app/${ctx.result.appId}/auth`;
     await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
     await ctx.page.waitForTimeout(4000);
-    const body = await ctx.page.locator("body").innerText().catch(() => "");
+    let body = await ctx.page.locator("body").innerText().catch(() => "");
     if (body.includes("暂未开通任何权限")) {
       return { ok: false, detail: "权限列表为空（暂未开通任何权限）" };
     }
 
-    // 核心活体校验：机器人必须拥有发消息的核心权限（im:message:send_as_bot 或 im:message）
-    const hasSendPermission =
-      body.includes("im:message:send_as_bot") ||
-      body.includes("以应用的身份发消息") ||
-      body.includes("im:message:send") ||
-      body.includes("im:message") ||
-      body.includes("获取与发送单聊、群消息");
+    // 核心活体校验：机器人必须拥有发/收消息的核心权限。
+    // 注意不能用裸 "im:message" 兜底——任意一条 im:message* 只读权限也会
+    // 命中子串匹配，导致缺发消息权限的应用被误判为已开通而跳过导入。
+    const hasSend = (b: string) =>
+      b.includes("im:message:send_as_bot") ||
+      b.includes("以应用的身份发消息") ||
+      b.includes("im:message:send") ||
+      b.includes("获取与发送单聊、群消息");
+    const hasReceive = (b: string) =>
+      b.includes("im:message.p2p_msg:readonly") ||
+      b.includes("获取用户发给机器人的单聊消息") ||
+      b.includes("读取用户发给机器人的单聊消息") ||
+      b.includes("获取与发送单聊、群消息");
 
-    if (!hasSendPermission) {
-      return { ok: false, detail: "缺少关键发消息权限（im:message:send_as_bot / 以应用的身份发消息）" };
+    if (!hasSend(body) || !hasReceive(body)) {
+      // 权限列表分页/折叠时，首屏 DOM 只渲染字母序前几行，im:message* 行可能
+      // 根本不在 innerText 里。用列表搜索框过滤 "im:message" 后再判一次，
+      // 避免已开通的权限被误判缺失而触发重复导入+发版。
+      let search = ctx.page.getByPlaceholder(/权限名称|im:chat:read|查看群信息/).first();
+      if (!(await search.isVisible({ timeout: 1500 }).catch(() => false))) {
+        search = ctx.page.locator("input[type='text']").last();
+      }
+      if (await search.isVisible({ timeout: 1500 }).catch(() => false)) {
+        await search.fill("im:message").catch(() => undefined);
+        await ctx.page.waitForTimeout(2500);
+        const filtered = await ctx.page.locator("body").innerText().catch(() => "");
+        if (filtered) {
+          body = filtered;
+        }
+      }
     }
 
-    // 核心活体校验：机器人必须拥有接收消息的核心权限（im:message.p2p_msg:readonly 或 im:message）
-    const hasReceivePermission =
-      body.includes("im:message.p2p_msg:readonly") ||
-      body.includes("获取用户发给机器人的单聊消息") ||
-      body.includes("读取用户发给机器人的单聊消息") ||
-      body.includes("im:message") ||
-      body.includes("获取与发送单聊、群消息");
-
-    if (!hasReceivePermission) {
+    if (!hasSend(body)) {
+      return { ok: false, detail: "缺少关键发消息权限（im:message:send_as_bot / 以应用的身份发消息）" };
+    }
+    if (!hasReceive(body)) {
       return { ok: false, detail: "缺少关键接收消息权限（im:message.p2p_msg:readonly / 获取用户发给机器人的单聊消息）" };
     }
 
