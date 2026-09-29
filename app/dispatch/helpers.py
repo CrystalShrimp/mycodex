@@ -20,15 +20,16 @@ logger = logging.getLogger("mycodex.dispatch")
 
 
 def session_scope_dir(workspace: str) -> str:
-    """会话读取目录：配置 CODEX_SESSION_DIR 时固定读该目录的会话，否则跟随当前工作区。
-
-    仅影响“读取”（/session /resume /continue 的列表与预判）；任务运行目录
-    （session.workspace，随 /cd 动态变化）不受影响。
+    """会话读取目录：若 CODEX_SESSION_DIR 为电脑端全局历史会话存储目录（如 ~/.codex/sessions），
+    则跟随当前工作区读取；若显式配置为某特定工程目录则读该工程目录。
     """
+    from app.agent.codex_sessions import is_codex_storage_dir
     fixed = settings.get_codex_session_dir()
     if fixed:
         try:
-            return str(Path(fixed).expanduser().resolve())
+            fp = Path(fixed).expanduser().resolve()
+            if not is_codex_storage_dir(fp):
+                return str(fp)
         except Exception:
             pass
     if not workspace:

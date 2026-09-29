@@ -1720,6 +1720,20 @@ async function createOrOpenApp(ctx: StepContext): Promise<void> {
 
   // 用户选择 0 创建新应用，或账号下无已有应用
   ctx.logger.info("即将进入创建全新企业自建应用流程...");
+  if (!isNonInteractivePrompt()) {
+    const customName = (await promptText(
+      ctx.prompt,
+      `请输入新应用的名称 (直接回车默认 "${ctx.config.appName}"): `
+    )).trim();
+    if (customName) {
+      ctx.config.appName = customName;
+      ctx.config.botName = customName;
+      ctx.logger.info(`已设置新应用名称为：“${ctx.config.appName}”`);
+    } else {
+      ctx.logger.info(`采用默认应用名称：“${ctx.config.appName}”`);
+    }
+  }
+  ctx.result.appName = ctx.config.appName;
   ctx.result.appId = null;
   ctx.result.maskedSecret = null;
   ctx.result.existingAppReused = false;

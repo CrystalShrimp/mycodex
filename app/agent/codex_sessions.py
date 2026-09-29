@@ -34,7 +34,33 @@ def codex_auth_ready() -> bool:
     return (codex_home() / "auth.json").is_file()
 
 
+def is_codex_storage_dir(p: Path) -> bool:
+    """判断路径是否为 Codex CLI 底层历史会话存储目录（如 ~/.codex 或 ~/.codex/sessions）。"""
+    name = p.name.lower()
+    if name == ".codex" or (name == "sessions" and p.parent.name.lower() == ".codex"):
+        return True
+    if (p / "sessions").is_dir() or (p / "auth.json").is_file():
+        return True
+    try:
+        if any(p.glob("rollout-*.jsonl")) or any(p.glob("*/*/rollout-*.jsonl")):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _sessions_dir() -> Path:
+    try:
+        from config.settings import settings
+        cfg_dir = settings.get_codex_session_dir()
+        if cfg_dir:
+            p = Path(cfg_dir).expanduser().resolve()
+            if p.is_dir() and is_codex_storage_dir(p):
+                if (p / "sessions").is_dir():
+                    return p / "sessions"
+                return p
+    except Exception:
+        pass
     return codex_home() / "sessions"
 
 
