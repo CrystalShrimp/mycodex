@@ -304,20 +304,29 @@ def fetch_app_creator_open_id(app_id: str, app_secret: str) -> str:
             except Exception:
                 raise
 
-    tok = call(
-        "POST",
-        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-        {"app_id": app_id, "app_secret": app_secret},
-    )["tenant_access_token"]
-    # 该接口必须带 lang 参数，否则直接 400
-    info = call(
-        "GET",
-        f"https://open.feishu.cn/open-apis/application/v6/applications/{app_id}?lang=zh_cn",
-        headers={"Authorization": "Bearer " + tok},
-    )
-    if info.get("code") != 0:
-        raise RuntimeError(f"code={info.get('code')} {info.get('msg')}")
-    return (info.get("data", {}).get("app", {}) or {}).get("creator_id", "")
+    last_info: dict = {}
+    for attempt in range(5):
+        tok = call(
+            "POST",
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            {"app_id": app_id, "app_secret": app_secret},
+        ).get("tenant_access_token", "")
+        # 该接口必须带 lang 参数，否则直接 400
+        info = call(
+            "GET",
+            f"https://open.feishu.cn/open-apis/application/v6/applications/{app_id}?lang=zh_cn",
+            headers={"Authorization": "Bearer " + tok},
+        )
+        last_info = info
+        if info.get("code") == 0:
+            return (info.get("data", {}).get("app", {}) or {}).get("creator_id", "")
+        if info.get("code") == 99991672 and attempt < 4:
+            print(f"[*] 等待飞书应用权限(application:application:self_manage)同步生效 ({attempt + 1}/5)...")
+            time.sleep(3)
+            continue
+        break
+
+    raise RuntimeError(f"code={last_info.get('code')} {last_info.get('msg')}")
 
 
 def apply_personal_allowlist():

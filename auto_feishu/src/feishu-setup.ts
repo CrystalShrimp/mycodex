@@ -2406,20 +2406,50 @@ async function enableBotCapability(ctx: StepContext): Promise<void> {
 // result.json 里的 permissionsImported / eventSubscriptionConfigured 只是历史快照，
 // 后台任何手动改动都不会使其失效。跳过决策必须基于当前线上状态，而不是缓存标志。
 
-async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; detail: string }> {
+async function probeSelfManageScopeOpenApi(appId?: string | null, appSecret?: string | null): Promise<{ ok: boolean; detail: string }> {
+  if (!appId || !appSecret) return { ok: true, detail: "" };
+  try {
+    const tokenResp = await fetch("https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ app_id: appId, app_secret: appSecret })
+    });
+    const tokenData = (await tokenResp.json()) as { code?: number; tenant_access_token?: string };
+    if (!tokenData.tenant_access_token) return { ok: true, detail: "" };
+
+    const appResp = await fetch(`https://open.feishu.cn/open-apis/application/v6/applications/${appId}?lang=zh_cn`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${tokenData.tenant_access_token}` }
+    });
+    const appData = (await appResp.json()) as { code?: number; msg?: string };
+    if (appData.code === 99991672) {
+      return { ok: false, detail: "OpenAPI 实测 application:application:self_manage 尚未生效 (code=99991672)" };
+    }
+    return { ok: true, detail: "" };
+  } catch {
+    return { ok: true, detail: "" };
+  }
+}
+
+async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; needPublish?: boolean; detail: string }> {
   if (!ctx.result.appId) return { ok: false, detail: "无 App ID" };
   try {
     const url = `https://open.feishu.cn/app/${ctx.result.appId}/auth`;
     await ctx.page.goto(url, { waitUntil: "domcontentloaded", timeout: ctx.config.timeoutMs });
     await ctx.page.waitForTimeout(4000);
-    let body = await ctx.page.locator("body").innerText().catch(() => "");
+    const initialBody = await ctx.page.locator("body").innerText().catch(() => "");
+    let body = initialBody;
     if (body.includes("暂未开通任何权限")) {
-      return { ok: false, detail: "权限列表为空（暂未开通任何权限）" };
+      return { ok: false, needPublish: true, detail: "权限列表为空（暂未开通任何权限）" };
     }
 
-    // 核心活体校验：机器人必须拥有发/收消息的核心权限。
-    // 注意不能用裸 "im:message" 兜底——任意一条 im:message* 只读权限也会
-    // 命中子串匹配，导致缺发消息权限的应用被误判为已开通而跳过导入。
+    // 1. 校验应用自管理权限（用于查询应用创建者 open_id，字母序 a 开头位于首屏顶部）
+    const hasSelfManage = (b: string) =>
+      b.includes("application:application:self_manage") ||
+      b.includes("admin:app.info:readonly") ||
+      b.includes("获取应用信息");
+
+    // 2. 校验机器人发/收消息核心权限
     const hasSend = (b: string) =>
       b.includes("im:message:send_as_bot") ||
       b.includes("以应用的身份发消息") ||
@@ -2431,10 +2461,11 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
       b.includes("读取用户发给机器人的单聊消息") ||
       b.includes("获取与发送单聊、群消息");
 
+    const selfManageOk = hasSelfManage(initialBody);
+
     if (!hasSend(body) || !hasReceive(body)) {
       // 权限列表分页/折叠时，首屏 DOM 只渲染字母序前几行，im:message* 行可能
-      // 根本不在 innerText 里。用列表搜索框过滤 "im:message" 后再判一次，
-      // 避免已开通的权限被误判缺失而触发重复导入+发版。
+      // 根本不在 innerText 里。用列表搜索框过滤 "im:message" 后再判一次。
       let search = ctx.page.getByPlaceholder(/权限名称|im:chat:read|查看群信息/).first();
       if (!(await search.isVisible({ timeout: 1500 }).catch(() => false))) {
         search = ctx.page.locator("input[type='text']").last();
@@ -2449,16 +2480,26 @@ async function verifyPermissionsLive(ctx: StepContext): Promise<{ ok: boolean; d
       }
     }
 
+    if (!selfManageOk) {
+      return { ok: false, needPublish: true, detail: "缺少关键应用管理权限（application:application:self_manage / 获取应用信息）" };
+    }
     if (!hasSend(body)) {
-      return { ok: false, detail: "缺少关键发消息权限（im:message:send_as_bot / 以应用的身份发消息）" };
+      return { ok: false, needPublish: true, detail: "缺少关键发消息权限（im:message:send_as_bot / 以应用的身份发消息）" };
     }
     if (!hasReceive(body)) {
-      return { ok: false, detail: "缺少关键接收消息权限（im:message.p2p_msg:readonly / 获取用户发给机器人的单聊消息）" };
+      return { ok: false, needPublish: true, detail: "缺少关键接收消息权限（im:message.p2p_msg:readonly / 获取用户发给机器人的单聊消息）" };
     }
 
-    return { ok: true, detail: "" };
+    // 3. OpenAPI 实测探针：若网页列表已存在上述权限，但 OpenAPI 仍报 99991672，
+    // 说明权限刚导入在未发布草稿中，尚未通过发布版本对 OpenAPI 生效，必须强制触发发版！
+    const apiProbe = await probeSelfManageScopeOpenApi(ctx.result.appId, ctx.runtimeAppSecret);
+    if (!apiProbe.ok) {
+      return { ok: true, needPublish: true, detail: apiProbe.detail };
+    }
+
+    return { ok: true, needPublish: false, detail: "" };
   } catch (e) {
-    return { ok: false, detail: `权限页无法打开：${e}` };
+    return { ok: false, needPublish: true, detail: `权限页无法打开：${e}` };
   }
 }
 
@@ -3276,21 +3317,25 @@ async function mainV2(): Promise<void> {
 
     // 跳过决策基于线上活体校验，不信任 result.json 的历史标志：
     // 后台手动改动（权限关闭/事件退订）不会使缓存标志失效。
-    let permissionsImportedThisRun = false;
+    let needForcePublish = false;
     const permLive = await verifyPermissionsLive(ctx);
     if (!permLive.ok) {
       logger.info(`线上校验：飞书权限异常（${permLive.detail || "未通过"}），执行导入...`);
       await executeStep(ctx, "导入飞书权限", async () => {
         await importPermissionsV2(ctx);
-        permissionsImportedThisRun = true;
+        needForcePublish = true;
       });
+    } else if (permLive.needPublish) {
+      logger.info(`线上校验：权限已在列表中，但 ${permLive.detail}，将在后续步骤强制发版生效。`);
+      needForcePublish = true;
     } else {
-      logger.info("线上校验：飞书发消息核心权限已开通，跳过导入。");
+      logger.info("线上校验：飞书核心权限与 OpenAPI 均已生效，跳过导入。");
     }
 
     if (!ctx.result.botEnabled) {
       await executeStep(ctx, "启用机器人能力", async () => {
         await enableBotCapability(ctx);
+        needForcePublish = true;
       });
     } else {
       logger.info("续跑：机器人能力已启用，跳过。");
@@ -3302,6 +3347,7 @@ async function mainV2(): Promise<void> {
         logger.info(`线上校验：事件订阅异常（${evLive.detail || "未全部通过"}），执行配置...`);
         await executeStep(ctx, "配置 WebSocket 事件订阅", async () => {
           await configureEventSubscription(ctx);
+          needForcePublish = true;
         });
       } else {
         logger.info("线上校验：事件订阅与回调均在线，跳过配置。");
@@ -3310,15 +3356,22 @@ async function mainV2(): Promise<void> {
 
     if (config.publishAfterSetup) {
       const pubLive = await verifyPublishLive(ctx);
-      // 若线上检测需要发版，或本次会话刚导入了新权限，必须发版（飞书要求新增权限必须发布版本方对 OpenAPI 生效）
-      if (!pubLive.ok || permissionsImportedThisRun) {
-        const reason = permissionsImportedThisRun
-          ? "已导入新权限，必须发版以使权限对 OpenAPI 正式生效"
+      // 若线上检测需要发版，或存在未发版生效的权限/事件修改，必须发版（飞书要求新增权限/事件必须发布版本方对 OpenAPI 生效）
+      if (!pubLive.ok || needForcePublish) {
+        const reason = needForcePublish
+          ? (permLive.detail || "存在新增权限或事件订阅修改，必须发版以使 OpenAPI 正式生效")
           : pubLive.detail;
         logger.info(`线上校验：${reason}，执行发版...`);
         await executeStep(ctx, "创建并发布飞书应用版本", async () => {
           await publishApp(ctx);
         });
+        // 发版后等待 OpenAPI 鉴权中心同步新版本权限（消除 99991672 传播延迟）
+        for (let i = 0; i < 6; i += 1) {
+          const probe = await probeSelfManageScopeOpenApi(ctx.result.appId, ctx.runtimeAppSecret);
+          if (probe.ok) break;
+          logger.debug(`等待新版本权限在 OpenAPI 生效 (${i + 1}/6)...`);
+          await ctx.page.waitForTimeout(2500);
+        }
       } else {
         ctx.result.published = true;
         logger.info("线上校验：无待发布修改，跳过发版。");
