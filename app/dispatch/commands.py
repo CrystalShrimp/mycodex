@@ -156,7 +156,7 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
     # --- /reset: reset all setup preferences for testing ---
     if text_lower in ("/reset", "重置"):
         preferences_manager.clear(open_id)
-        await reply.text("已重置为默认初始设置（Model / Effort / Mode）。")
+        await reply.text("已清空所有初始设置（Model / Effort / Mode）。")
         return
 
     # --- /status ---
@@ -719,23 +719,41 @@ async def _run_codex(
         preferences = preferences_manager.get(open_id)
         models = discover_models()
 
-        # 默认配置继承：未配置时自动使用系统默认值（零门槛冷启动，免去强制卡片阻塞）
-        applied_defaults = False
-        if preferences.model not in models:
-            default_model = getattr(settings, "codex_default_model", "") or "gpt-5.6-terra"
-            if default_model not in models and models:
-                default_model = next(iter(models.keys()))
-            preferences.model = default_model
-            applied_defaults = True
-        if preferences.level not in VALID_EFFORTS:
-            preferences.level = "medium"
-            applied_defaults = True
-        if preferences.mode not in ("h", "m", "l"):
-            preferences.mode = getattr(settings, "approval_mode", "") or "m"
-            applied_defaults = True
+        need_model = preferences.model not in models
+        need_effort = preferences.level not in VALID_EFFORTS
+        need_mode = preferences.mode not in ("h", "m", "l")
 
-        if applied_defaults:
-            preferences_manager.save(open_id, preferences)
+        if need_model or need_effort or need_mode:
+            session.pending_prompt = prompt
+            session_manager.save_session(session)
+
+            missing_views: list[tuple[str, dict]] = []
+            if need_model:
+                missing_views.append(("model_selection", {
+                    "approval_id": uuid.uuid4().hex[:12],
+                    "models": models,
+                    "current_model": "",
+                }))
+            if need_effort:
+                missing_views.append(("effort_selection", {
+                    "approval_id": uuid.uuid4().hex[:12],
+                    "current_effort": "",
+                }))
+            if need_mode:
+                missing_views.append(("mode_selection", {
+                    "approval_id": uuid.uuid4().hex[:12],
+                    "active_mode": "",
+                }))
+
+            for kind, payload in missing_views:
+                await reply.view(kind, **payload)
+
+            prompt_preview = prompt if len(prompt) <= 30 else prompt[:27] + "..."
+            await reply.text(
+                f"💡 任务已安全暂存：`{prompt_preview}`\n"
+                f"系统检测到有 {len(missing_views)} 项初始配置尚未设置。请直接在上方卡片中点选完成，全部设置就绪后系统将全自动重新开始为您执行任务！",
+            )
+            return
 
         # 自动感知并对齐电脑端最新 CLI 会话（电脑端创建/更新会话向飞书端同步）
         if not resume_thread_id and session.workspace:

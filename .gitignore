@@ -22,6 +22,7 @@ config/settings_*.json
 config/shortcuts.json
 config/claude_settings.json
 config/active_profile
+config/global_preferences.json
 
 # Logs & runtime output
 *.log

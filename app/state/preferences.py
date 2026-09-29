@@ -49,19 +49,18 @@ class PreferencesManager:
         )
 
     def get_global(self) -> UserPreferences:
-        defaults = self._get_system_defaults()
         if not GLOBAL_PREFERENCES_FILE.exists():
-            return defaults
+            return UserPreferences()
         try:
             data = json.loads(GLOBAL_PREFERENCES_FILE.read_text("utf-8"))
             return UserPreferences(
-                model=str(data.get("model", "") or defaults.model),
-                level=str(data.get("level", "") or defaults.level),
-                mode=str(data.get("mode", "") or defaults.mode),
+                model=str(data.get("model", "")),
+                level=str(data.get("level", "")),
+                mode=str(data.get("mode", "")),
             )
         except Exception as exc:
             logger.warning("Failed to load global preferences: %s", exc)
-            return defaults
+            return UserPreferences()
 
     def save_global(self, preferences: UserPreferences) -> None:
         payload = json.dumps(asdict(preferences), indent=2, ensure_ascii=False)
@@ -78,10 +77,10 @@ class PreferencesManager:
         self.save_global(preferences)
 
     def clear(self, open_id: str) -> UserPreferences:
-        """重置配置回系统默认值。"""
-        defaults = self._get_system_defaults()
-        self.save_global(defaults)
-        return defaults
+        """清空初始配置，以便重新触发初始配置卡片（Model / Effort / Mode）。"""
+        empty = UserPreferences()
+        self.save_global(empty)
+        return empty
 
     def load_workspace_config(self, workspace: str) -> UserPreferences | None:
         """已废除项目内配置记忆，统一使用全局配置。"""
