@@ -54,7 +54,7 @@ bash scripts/setup_autostart_mac.sh                    # 开机自启 (launchd�
 ```
 app/            后端 FastAPI 服务（事件分发、卡片、Codex CLI 调度）
 auto_feishu/    飞书一键配置子模块（TypeScript + Playwright）
-config/         服务设置（settings.py）与 .env 模板（env.example）
+config/         服务设置（settings.py）、全局偏好与配置模板目录（examples/env.example）
 launcher_windows/ Windows 客户入口（Setup/MyCodex/Restart）
 launcher_macos/   macOS 客户入口
 doc/            产品文档
@@ -64,7 +64,7 @@ scripts/        托盘程序、重启脚本、开机自启等
 
 ## 配置入口
 
-- **`.env`**：从 `config/env.example` 复制。包含飞书凭据、`ALLOWED_USERS` 访问白名单、默认工作区、服务端口（8090）等；
+- **`.env`**：从 `config/examples/env.example` 复制。包含飞书凭据、`ALLOWED_USERS` 访问白名单、默认工作区、服务端口（8090）等；
 - **`icon.png` / `icon.jpg` / `icon.ico`**（可选）：放到项目根目录可自定义托盘图标，缺失时使用系统默认图标。
 
 ## 路线图

@@ -72,7 +72,7 @@ def upsert_env_key(key: str, value: str):
     """更新或插入 .env 文件中的配置项。"""
     env_file = ROOT_DIR / ".env"
     if not env_file.exists():
-        example_file = ROOT_DIR / "config" / "env.example"
+        example_file = ROOT_DIR / "config" / "examples" / "env.example"
         if example_file.exists():
             shutil.copy(example_file, env_file)
         else:
@@ -138,7 +138,7 @@ def confirm_directories():
 
     # 确保 .env 基础文件存在
     env_file = ROOT_DIR / ".env"
-    example_file = ROOT_DIR / "config" / "env.example"
+    example_file = ROOT_DIR / "config" / "examples" / "env.example"
     if not env_file.exists():
         if example_file.exists():
             shutil.copy(example_file, env_file)
@@ -227,10 +227,91 @@ def check_environment():
         print("[OK] Codex CLI 已就绪。")
 
 
+def configure_initial_preferences():
+    """交互式配置初始运行偏好：Model / Effort / Mode，并写入 config/global_preferences.json。"""
+    from app.profiles import discover_models
+    from app.state.preferences import UserPreferences, preferences_manager
+
+    current = preferences_manager.get_global()
+    models = discover_models()
+    model_keys = list(models.keys()) if models else ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex"]
+    default_model = current.model if current.model in model_keys else model_keys[0]
+
+    print("\n" + "-" * 60)
+    print("  【初始运行偏好配置】(Model / Effort / Mode)")
+    print("-" * 60)
+
+    # 1. Model
+    print(f"\n  [1/3] 选择默认模型 (Model) [当前默认: {default_model}]:")
+    for idx, k in enumerate(model_keys, 1):
+        label = models[k].label if k in models else k
+        mark = " (默认)" if k == default_model else ""
+        print(f"    {idx}. {k} - {label}{mark}")
+    raw_m = input(f"  请选择序号或模型名称 (直接回车 = {default_model}): ").strip()
+    chosen_model = default_model
+    if raw_m:
+        if raw_m.isdigit() and 1 <= int(raw_m) <= len(model_keys):
+            chosen_model = model_keys[int(raw_m) - 1]
+        else:
+            chosen_model = raw_m
+
+    # 2. Effort (low / medium / high / xhigh / max)
+    effort_options = [
+        ("medium", "Medium（默认平衡）"),
+        ("high", "High（深度思考）"),
+        ("xhigh", "XHigh（超强推理）"),
+        ("max", "Max（极限思考）"),
+        ("low", "Low（快速响应）"),
+    ]
+    valid_efforts = tuple(k for k, _ in effort_options)
+    default_effort = current.level if current.level in valid_efforts else "medium"
+    print(f"\n  [2/3] 选择默认思考力度 (Effort) [当前默认: {default_effort}]:")
+    for idx, (val, desc) in enumerate(effort_options, 1):
+        mark = " (默认)" if val == default_effort else ""
+        print(f"    {idx}. {val} - {desc}{mark}")
+    raw_e = input(f"  请选择 [1-5] 或名称 (直接回车 = {default_effort}): ").strip().lower()
+    chosen_effort = default_effort
+    if raw_e:
+        if raw_e.isdigit() and 1 <= int(raw_e) <= len(effort_options):
+            chosen_effort = effort_options[int(raw_e) - 1][0]
+        elif raw_e in valid_efforts:
+            chosen_effort = raw_e
+
+    # 3. Mode (m / h / l)
+    mode_options = [
+        ("m", "中权限 (m) - 读/改自动放行，危险命令需确认（推荐）"),
+        ("h", "高权限 (h) - 全自动执行，无需人工确认"),
+        ("l", "低权限 (l) - 所有写文件与执行命令均需确认"),
+    ]
+    default_mode = current.mode if current.mode in ("m", "h", "l") else "m"
+    print(f"\n  [3/3] 选择默认权限审批模式 (Mode) [当前默认: {default_mode}]:")
+    for idx, (val, desc) in enumerate(mode_options, 1):
+        mark = " (默认)" if val == default_mode else ""
+        print(f"    {idx}. {desc}{mark}")
+    raw_mode = input(f"  请选择 [1-3] 或 m/h/l (直接回车 = {default_mode}): ").strip().lower()
+    chosen_mode = default_mode
+    if raw_mode:
+        if raw_mode.isdigit() and 1 <= int(raw_mode) <= len(mode_options):
+            chosen_mode = mode_options[int(raw_mode) - 1][0]
+        elif raw_mode in ("m", "h", "l"):
+            chosen_mode = raw_mode
+
+    prefs = UserPreferences(
+        model=chosen_model,
+        level=chosen_effort,
+        mode=chosen_mode,
+    )
+    preferences_manager.save_global(prefs)
+    print(
+        f"\n[OK] 初始运行配置已保存: Model={chosen_model} "
+        f"| Effort={chosen_effort} | Mode={chosen_mode}"
+    )
+
+
 def check_or_setup_models():
-    """【Step 3/4】Codex 认证状态检查 (Codex Auth)。"""
+    """【Step 3/4】Codex 认证状态与初始偏好配置 (Auth / Model / Effort / Mode)。"""
     print("\n" + "=" * 60)
-    print("      【Step 3/4】Codex 账号认证状态 (Codex Auth)")
+    print("  【Step 3/4】Codex 账号认证与初始运行配置 (Model/Effort/Mode)")
     print("=" * 60)
     print()
 
@@ -248,6 +329,8 @@ def check_or_setup_models():
         c = input("[?] 是否立即在终端执行 'codex login' 进行登录？[Y/N] (直接回车 = 是): ").strip().lower()
         if c in ("", "y"):
             run_cmd(["codex", "login"])
+
+    configure_initial_preferences()
 
 
 def ensure_playwright_chromium(auto_feishu_dir: Path) -> bool:
@@ -473,7 +556,9 @@ def configure_autostart():
 
 
 def collect_init_status() -> dict:
-    """收集前三步初始化状态（运行环境 / 目录 / Codex 认证）。"""
+    """收集前三步初始化状态（运行环境 / 目录 / Codex 认证与初始偏好）。"""
+    from app.state.preferences import preferences_manager
+
     workspace = get_env_value("DEFAULT_WORKSPACE")
     session_dir = get_env_value("CODEX_SESSION_DIR")
 
@@ -488,6 +573,8 @@ def collect_init_status() -> dict:
     auth_file = Path.home() / ".codex" / "auth.json"
     auth_ready = auth_file.exists() and auth_file.stat().st_size > 10
 
+    prefs = preferences_manager.get_global()
+
     return {
         "workspace": workspace,
         "session_dir": session_dir,
@@ -496,7 +583,11 @@ def collect_init_status() -> dict:
         "codex_ready": codex_ready,
         "environment_done": bool(node_version) and codex_ready,
         "auth_ready": auth_ready,
-        "model_done": auth_ready,
+        "pref_model": prefs.model,
+        "pref_effort": prefs.level,
+        "pref_mode": prefs.mode,
+        "prefs_complete": prefs.complete,
+        "model_done": auth_ready and prefs.complete,
     }
 
 
@@ -506,7 +597,7 @@ def run_init_steps(force: bool = False):
     steps = [
         ("environment", "运行环境", check_environment),
         ("workspace", "运行目录与会话目录", confirm_directories),
-        ("model", "Codex 认证", check_or_setup_models),
+        ("model", "Codex 认证与初始配置", check_or_setup_models),
     ]
     for key, label, fn in steps:
         if force or not status[f"{key}_done"]:
@@ -516,7 +607,9 @@ def run_init_steps(force: bool = False):
 
 
 def show_init_config():
-    """查看前三步初始化配置信息，可选择重跑。"""
+    """查看前三步初始化配置信息，可选择重置并重跑。"""
+    from app.state.preferences import preferences_manager
+
     status = collect_init_status()
     print("\n" + "=" * 60)
     print("        初始化配置信息（Step 1-3 初始化设置）")
@@ -528,16 +621,20 @@ def show_init_config():
     print("  【Step 2 目录】")
     print(f"    初始运行目录 (DEFAULT_WORKSPACE) : {status['workspace'] or '(未配置)'}")
     print(f"    历史会话目录 (CODEX_SESSION_DIR) : {status['session_dir'] or '(未配置，自动读取 ~/.codex/sessions)'}")
-    print("  【Step 3 Codex 账号认证】")
+    print("  【Step 3 Codex 账号认证与初始运行配置】")
     print(f"    ChatGPT 登录态 (~/.codex/auth.json) : {'已就绪' if status['auth_ready'] else '未检测到'}")
+    print(f"    默认模型     (Model)  : {status['pref_model'] or '(未配置)'}")
+    print(f"    默认思考力度 (Effort) : {status['pref_effort'] or '(未配置)'}")
+    print(f"    默认审批模式 (Mode)   : {status['pref_mode'] or '(未配置)'}")
     print()
 
     if status["workspace_done"] and status["environment_done"] and status["model_done"]:
         print("  [OK] 初始化设置已全部完成。")
     else:
         print("  [!] 存在未完成的初始化项。")
-    choice = input("[?] 是否重新运行初始化设置（Step 1-3）？[y/N] (直接回车 = 否): ").strip().lower()
+    choice = input("[?] 是否重置并重新运行初始化设置（Step 1-3）？[y/N] (直接回车 = 否): ").strip().lower()
     if choice == "y":
+        preferences_manager.clear("")
         run_init_steps(force=True)
 
 
@@ -554,11 +651,11 @@ def main_menu():
         print("\n【企业微信接入】")
         print(" 4. 配置企业微信")
         print(" 5. 完整配置（飞书公用 + 企业微信）")
-        print("\n【账号授权】")
-        print(" 6. Codex 认证管理（登录/切换 ChatGPT 账号）")
+        print("\n【账号与初始运行配置】")
+        print(" 6. Codex 认证与初始运行配置（登录切换 / Model / Effort / Mode）")
         print("\n【系统】")
         print(" 7. 配置开机自启（每次开机自动静默后台运行）")
-        print(" 8. 查看初始化配置（工作空间/运行环境/Codex 认证）")
+        print(" 8. 查看/重置初始化配置（工作空间/运行环境/Codex 认证与初始偏好）")
         print("\n【退出】")
         print(" 0. 退出向导（完成并显示启动说明）")
         print()
@@ -584,7 +681,10 @@ def main_menu():
             print("\n[*] 接下来进入企业微信配置...")
             setup_wecom_auto()
         elif choice == "6":
-            run_cmd(["codex", "login"])
+            c = input("[?] 是否需要重新执行 'codex login' 登录/切换账号？[y/N] (直接回车 = 跳过登录仅改偏好): ").strip().lower()
+            if c == "y":
+                run_cmd(["codex", "login"])
+            configure_initial_preferences()
         elif choice == "7":
             configure_autostart()
         elif choice == "8":
