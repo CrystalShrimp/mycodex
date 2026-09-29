@@ -54,21 +54,22 @@
    - **默认值**：自动探测电脑端 Codex CLI 历史会话存储目录（优先读取 `$CODEX_HOME/sessions`，默认 `~/.codex/sessions`）。
    - **运行机制**：供 `/cd`（无参弹出历史项目卡片）、`/session`、`/resume`、`/continue` 枚举并恢复电脑端终端的历史会话（解析 `rollout-*.jsonl` 中的 `session_meta.payload.cwd` 与对话记录）。
 
-### Step 3/4：Codex 账号认证 (`ensure_codex_auth`)
-- 自动检测本机是否存在有效的 ChatGPT 授权凭证（`~/.codex/auth.json`）。
-- 若未检测到凭证，向导自动调用 `codex login` 拉起浏览器完成 ChatGPT 账号登录授权，无需手动配置 API Key。
+### Step 3/4：Codex 账号认证与初始运行配置 (`check_or_setup_models`)
+- 自动检测本机是否存在有效的 ChatGPT 授权凭证（`~/.codex/auth.json`）；若未检测到则引导调用 `codex login`。
+- 交互式设置三项初始运行偏好并写入 `config/global_preferences.json`：**Model（默认模型）**、**Effort（思考力度：`low`/`medium`/`high`/`xhigh`/`max`）**、**Mode（权限审批模式：`h`/`m`/`l`）**。
 
-### Step 4/4：配置中心（飞书 / 企业微信自动化接入与白名单）
-在配置中心菜单中，用户可选择：
-- **选项 `1` — 飞书机器人 · 个人用模式（推荐个人开发者）**
-  - 启动 Playwright 浏览器打开飞书开放平台，引导用户扫码登录；
-  - 支持选择已有企业自建应用，或选 `0` **创建全新应用**（支持自定义应用名称，直接回车默认为 `mycodex`）；
-  - 全自动完成：获取凭证写入 `.env` $\rightarrow$ 批量导入权限（含消息收发及 `application:application:self_manage`） $\rightarrow$ 启用机器人能力 $\rightarrow$ 后台拉起本地服务并建立 WebSocket 长连接以通过飞书事件订阅校验（订阅 `im.message.receive_v1` 与 `card.action.trigger`） $\rightarrow$ 自动创建并发布版本；
-  - **个人白名单自动收尾**：发版生效后，自动调用飞书 OpenAPI 查询应用创建者本人的 `open_id`，并将其写入 `.env` 的 `ALLOWED_USERS`（配合 `ALLOWED_MODE=creator`），确保仅本人可调用该机器人。
-- **选项 `2` — 飞书机器人 · 全员 / 群聊模式（团队共享）**
-  - 同样全自动完成飞书应用配置与发版，并支持配置为企业全员可用（`ALLOWED_MODE=org`）或拉取指定群聊成员白名单（`scripts/import_feishu_group.py`）。
-- **选项 `3` — 企业微信智能机器人接入 (`auto_wecom`)**
+### Step 4/4：配置中心（菜单选项 `1` - `7`）
+- **选项 `1` — 配置飞书 - 个人：仅创建者可用**
+  - 自动创建/复用飞书自建应用（支持自定义应用名称，默认 `mycodex`），导入权限（含 `application:application:self_manage`）、开启长连接并发布版本，自动查询应用创建者 `open_id` 写入 `.env` 的 `ALLOWED_USERS`。
+- **选项 `2` — 配置飞书 - 公用：全部成员可用**
+  - 全自动完成飞书应用配置与发版，默认 `ALLOWED_USERS` 留空对全员开放，并询问是否立即导入指定飞书群成员白名单。
+- **选项 `3` — `└─ 一键授权飞书群成员：基于2，限制仅特定群成员可用`**
+  - 调用 `scripts/import_feishu_group.py`，支持选择 **重置群成员名单（覆盖）** 或 **添加新的群成员名单（追加合并）**。
+- **选项 `4` — 配置企业微信**
   - 自动配置企业微信智能机器人长连接（写入 `WECOM_BOT_ID` 与 `WECOM_SECRET`）。
+- **选项 `5` — Codex 认证与初始运行配置（登录切换 / Model / Effort / Mode）**
+- **选项 `6` — 配置开机自启（每次开机自动静默后台运行）**
+- **选项 `7` — 查看/重置初始化配置（工作空间/运行环境/Codex 认证与初始偏好）**
 
 ---
 
