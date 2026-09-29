@@ -2553,6 +2553,75 @@ async function verifyEventSubscriptionLive(ctx: StepContext): Promise<{ ok: bool
   }
 }
 
+async function searchAndCheckDialogItem(
+  page: Page,
+  dialog: Locator | Page,
+  itemName: string,
+  timeoutMs: number,
+  logger: Logger,
+  categoryHint?: string
+): Promise<void> {
+  await dialog.locator(".ud__loading__container-blur").waitFor({ state: "hidden", timeout: 4000 }).catch(() => undefined);
+  await page.waitForTimeout(800);
+
+  const search = dialog.getByPlaceholder("搜索").first();
+  const itemText = dialog.getByText(itemName, { exact: true }).first();
+
+  const maxAttempts = 5;
+  const perAttemptWaitMs = Math.max(3500, Math.floor(timeoutMs / maxAttempts));
+  let found = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await search.click({ timeout: 3000 }).catch(() => undefined);
+      await search.fill("", { timeout: 3000 }).catch(() => undefined);
+      await search.fill(itemName, { timeout: 3000 });
+      await search.press("Enter").catch(() => undefined);
+      await page.waitForTimeout(400);
+
+      // 二次校验：防止飞书弹窗异步初始化完成时 React 重渲染把刚填入的搜索词冲刷为空
+      const curVal = await search.inputValue().catch(() => "");
+      if (curVal !== itemName) {
+        logger.debug(`弹窗搜索框被重置 (当前值="${curVal}")，正在第 ${attempt} 次重填：${itemName}`);
+        await search.fill(itemName, { timeout: 3000 });
+        await search.press("Enter").catch(() => undefined);
+      }
+
+      await itemText.waitFor({ state: "visible", timeout: perAttemptWaitMs });
+      found = true;
+      break;
+    } catch {
+      if (categoryHint) {
+        const catItem = dialog.getByText(categoryHint, { exact: true }).first();
+        if (await catItem.isVisible().catch(() => false)) {
+          await catItem.click({ timeout: 2000 }).catch(() => undefined);
+          await page.waitForTimeout(500);
+        }
+      }
+    }
+  }
+
+  if (!found) {
+    await itemText.waitFor({ state: "visible", timeout: 3000 });
+  }
+
+  const row = itemText.locator("xpath=ancestor::*[.//input[@type='checkbox']][1]");
+  const checkbox = row.locator("input[type='checkbox']").first();
+  if (!(await checkbox.isVisible().catch(() => false))) {
+    throw new Error("未找到复选框：" + itemName);
+  }
+  await dialog.locator(".ud__loading__container-blur").waitFor({ state: "hidden", timeout: timeoutMs }).catch(() => undefined);
+  await checkbox.check({ timeout: timeoutMs }).catch(async () => {
+    await checkbox.click({ force: true, timeout: 3000 });
+  });
+  const ariaChecked = await checkbox.getAttribute("aria-checked").catch(() => null);
+  const isChecked = await checkbox.isChecked().catch(() => false);
+  if (ariaChecked !== "true" && !isChecked) {
+    await checkbox.click({ force: true, timeout: 3000 });
+  }
+  logger.debug("已勾选：" + itemName);
+}
+
 async function configureEventSubscription(ctx: StepContext): Promise<void> {
   await waitForLocalClawOnline(ctx);
 
@@ -2619,21 +2688,10 @@ async function configureEventSubscription(ctx: StepContext): Promise<void> {
   const addEvent = await clickByCandidates(ctx.page, ["添加事件"], ctx.config.timeoutMs, ctx.logger);
   if (!addEvent) throw new Error("未找到可用的添加事件按钮。");
   const eventDialog = (await findVisibleModal(ctx.page, ctx.config.timeoutMs)) ?? ctx.page;
-  const search = eventDialog.getByPlaceholder("搜索").first();
 
   for (const eventName of missingEvents) {
-    await search.fill(eventName, { timeout: ctx.config.timeoutMs });
-    const eventText = eventDialog.getByText(eventName, { exact: true }).first();
-    await eventText.waitFor({ state: "visible", timeout: ctx.config.timeoutMs });
-    const eventRow = eventText.locator("xpath=ancestor::*[.//input[@type='checkbox']][1]");
-    const checkbox = eventRow.locator("input[type='checkbox']").first();
-    if (!(await checkbox.isVisible().catch(() => false))) {
-      throw new Error("未找到事件复选框：" + eventName);
-    }
-    await eventDialog.locator(".ud__loading__container-blur").waitFor({ state: "hidden", timeout: ctx.config.timeoutMs }).catch(() => undefined);
-    await checkbox.check({ timeout: ctx.config.timeoutMs });
-    if ((await checkbox.getAttribute("aria-checked")) !== "true") throw new Error("事件复选框未选中：" + eventName);
-    ctx.logger.debug("已勾选事件：" + eventName);
+    const categoryHint = eventName.startsWith("im.") ? "消息与群组" : undefined;
+    await searchAndCheckDialogItem(ctx.page, eventDialog, eventName, ctx.config.timeoutMs, ctx.logger, categoryHint);
   }
 
   const confirmAdd = await waitForEnabledAction(eventDialog, ["添加"], ctx.config.timeoutMs);
@@ -2695,15 +2753,8 @@ async function configureEventSubscription(ctx: StepContext): Promise<void> {
       const addCallback = await clickByCandidates(ctx.page, ["添加回调"], ctx.config.timeoutMs, ctx.logger);
       if (!addCallback) throw new Error("未找到添加回调按钮。");
       const callbackDialog = (await findVisibleModal(ctx.page, ctx.config.timeoutMs)) ?? ctx.page;
-      const callbackSearch = callbackDialog.getByPlaceholder("搜索").first();
       for (const callbackName of missingCallbacks) {
-        await callbackSearch.fill(callbackName, { timeout: ctx.config.timeoutMs });
-        const callbackText = callbackDialog.getByText(callbackName, { exact: true }).first();
-        await callbackText.waitFor({ state: "visible", timeout: ctx.config.timeoutMs });
-        const callbackRow = callbackText.locator("xpath=ancestor::*[.//input[@type='checkbox']][1]");
-        const checkbox = callbackRow.locator("input[type='checkbox']").first();
-        await checkbox.check({ timeout: ctx.config.timeoutMs });
-        ctx.logger.debug("已勾选回调：" + callbackName);
+        await searchAndCheckDialogItem(ctx.page, callbackDialog, callbackName, ctx.config.timeoutMs, ctx.logger);
       }
       const confirmCallback = await waitForEnabledAction(callbackDialog, ["添加"], ctx.config.timeoutMs);
       if (!confirmCallback) throw new Error("勾选回调后未找到添加确认按钮。");
