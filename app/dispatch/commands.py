@@ -27,6 +27,7 @@ from app.dispatch.helpers import (
     iter_session_messages,
     list_workspace_sessions,
     predict_continue_session,
+    session_scope_dir,
 )
 from app.dispatch.sessions import session_manager, skey_for
 from app.models.schemas import Session, TaskStatus
@@ -401,6 +402,10 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
         await codex_cli_loop.cancel_and_wait(skey)
         session.codex_thread_id = parts[1].strip()
         session.context_tokens = 0
+        # 固定会话目录（CODEX_SESSION_DIR）下恢复的会话属于那个项目，需同步切换工作区
+        scope_ws = session_scope_dir(session.workspace)
+        if settings.get_codex_session_dir() and scope_ws and scope_ws != session.workspace:
+            session.workspace = scope_ws
         session_manager.save_session(session)
         pref = preferences_manager.get(open_id)
         models = discover_models()
@@ -430,6 +435,12 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             session.codex_thread_id = "__continue__"
             session_manager.save_session(session)
             preferences_manager.clear(open_id)
+        # 配置了固定会话目录时，/continue 固定恢复该目录下最近的会话
+        if settings.get_codex_session_dir():
+            scope_ws = session_scope_dir(session.workspace)
+            if scope_ws and scope_ws != session.workspace:
+                session.workspace = scope_ws
+                session_manager.save_session(session)
         await _run_codex(prompt, target, session, skip_classify=True)
         return
 

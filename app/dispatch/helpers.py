@@ -19,6 +19,23 @@ logger = logging.getLogger("mycodex.dispatch")
 # ===== codex native session readers =====
 
 
+def session_scope_dir(workspace: str) -> str:
+    """会话读取目录：配置 CODEX_SESSION_DIR 时固定读该目录的会话，否则跟随当前工作区。
+
+    仅影响“读取”（/session /resume /continue 的列表与预判）；任务运行目录
+    （session.workspace，随 /cd 动态变化）不受影响。
+    """
+    fixed = settings.get_codex_session_dir()
+    if fixed:
+        try:
+            return str(Path(fixed).expanduser().resolve())
+        except Exception:
+            pass
+    if not workspace:
+        return ""
+    return str(Path(workspace).resolve())
+
+
 def find_all_codex_projects() -> list[str]:
     """Every workspace that has at least one codex session, newest first."""
     return find_all_codex_workspaces()
@@ -26,9 +43,10 @@ def find_all_codex_projects() -> list[str]:
 
 def predict_continue_session(workspace: str) -> dict:
     """预判当前工作区将继续恢复的 codex thread 及最后一次对话摘要。"""
-    if not workspace:
+    scope_ws = session_scope_dir(workspace)
+    if not scope_ws:
         return {"can_continue": False, "thread_id": "", "last_summary": ""}
-    found = latest_thread_for_workspace(workspace)
+    found = latest_thread_for_workspace(scope_ws)
     if not found:
         return {"can_continue": False, "thread_id": "", "last_summary": ""}
     return {
@@ -40,7 +58,8 @@ def predict_continue_session(workspace: str) -> dict:
 
 def list_workspace_sessions(workspace: str) -> list[dict]:
     """枚举当前工作区下的全部 codex thread，按最近活动倒序。"""
-    return list_workspace_threads(workspace)
+    scope_ws = session_scope_dir(workspace)
+    return list_workspace_threads(scope_ws) if scope_ws else []
 
 
 def iter_session_messages(thread_id: str) -> list[dict]:

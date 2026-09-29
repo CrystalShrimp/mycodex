@@ -111,67 +111,80 @@ def get_recommended_workspace() -> Path:
     return Path("C:\\projects")
 
 
-def confirm_workspaces():
-    """【Step 1/4】运行目录与工作空间确认 (Workspace)。"""
+def confirm_directories():
+    """【Step 2/4】初始运行目录与 Codex 会话目录确认。"""
     print("\n" + "=" * 60)
-    print("      【Step 1/4】运行目录与工作空间确认 (Workspace)")
+    print("   【Step 2/4】初始运行目录与 Codex 会话目录确认")
     print("=" * 60)
     print()
-    print("  [1] MyCodex 程序运行目录 (只读):")
-    print(f"      {ROOT_DIR.resolve()}")
-    print("      >> 说明: 用于承载网关服务、系统核心配置（.env）与运行日志。\n")
+    print(f"  MyCodex 程序运行目录 (只读): {ROOT_DIR.resolve()}")
+    print()
 
-    # 1. 确保 .env 基础文件存在
+    # 确保 .env 基础文件存在
     env_file = ROOT_DIR / ".env"
     example_file = ROOT_DIR / "config" / "env.example"
     if not env_file.exists():
         if example_file.exists():
             shutil.copy(example_file, env_file)
-            print("[OK] 已初始化生成 .env 配置文件。")
+            print("[OK] 已初始化生成 .env 配置文件。\n")
         else:
             env_file.touch()
 
-    # 2. 获取当前已配置或智能推荐路径
+    def ask_path(label: str, recommended: Path, hint: str) -> Path:
+        print(f"  {label}")
+        print(f"      当前推荐: {recommended}")
+        print(f"      >> {hint}")
+        choice = input("[?] 是否直接采用？[Y/N] (直接回车 = 采用): ").strip().lower()
+        final = recommended
+        if choice == "n":
+            while True:
+                custom = input("请输入目录绝对路径: ").strip().strip("'\"")
+                if not custom:
+                    print("[!] 路径不能为空，请重新输入。")
+                    continue
+                try:
+                    final = Path(custom).expanduser().resolve()
+                    break
+                except Exception as e:
+                    print(f"[!] 路径格式无效 ({e})，请重新输入。")
+        print()
+        return final
+
+    # 1. 初始运行目录：新任务默认在此运行；IM 里 /cd 可随时切换，互不影响
     configured = get_env_value("DEFAULT_WORKSPACE")
-    if configured:
-        rec_path = Path(configured).expanduser()
-    else:
-        rec_path = get_recommended_workspace()
-
-    print("  [2] Codex 默认工作空间 (AI 操盘区):")
-    print(f"      当前推荐: {rec_path}")
-    print("      >> 说明: AI 编写业务代码、读取项目、执行终端指令的实际工程文件夹。")
-    print()
-
-    choice = input("[?] 是否直接采用此工作目录？[Y/N] (直接回车 = 推荐路径): ").strip().lower()
-    final_ws = rec_path
-    if choice == "n":
-        while True:
-            custom_input = input("请输入您希望 AI 操盘的代码工程目录绝对路径: ").strip().strip("'\"")
-            if not custom_input:
-                print("[!] 路径不能为空，请重新输入。")
-                continue
-            try:
-                final_ws = Path(custom_input).expanduser().resolve()
-                break
-            except Exception as e:
-                print(f"[!] 路径格式无效 ({e})，请重新输入。")
-
-    # 自动在磁盘创建目标目录
+    rec_ws = Path(configured).expanduser() if configured else get_recommended_workspace()
+    final_ws = ask_path(
+        "[1] 初始运行目录（新任务默认在此运行；IM 里 /cd 可随时切换，互不影响）:",
+        rec_ws,
+        "AI 编写业务代码、读取项目、执行终端指令的实际工程目录。",
+    )
     try:
         final_ws.mkdir(parents=True, exist_ok=True)
-        print(f"[OK] 默认工作空间已就绪: {final_ws}")
+        print(f"[OK] 初始运行目录已就绪: {final_ws}")
     except Exception as e:
         print(f"[!] 创建目录遇到问题 ({e})，但已记录该路径。")
-
-    # 写入 .env 文件
     upsert_env_key("DEFAULT_WORKSPACE", str(final_ws))
+
+    # 2. Codex 会话目录：/session /resume /continue 固定读取该目录下的终端会话
+    sess_configured = get_env_value("CODEX_SESSION_DIR")
+    rec_sess = Path(sess_configured).expanduser() if sess_configured else final_ws
+    final_sess = ask_path(
+        "[2] Codex 会话目录（读取该目录下的终端会话，供 /session /resume /continue 使用）:",
+        rec_sess,
+        "填你平时在终端里跑 Codex CLI 的项目目录，即可在 IM 里续接终端会话。",
+    )
+    try:
+        final_sess.mkdir(parents=True, exist_ok=True)
+        print(f"[OK] 会话目录已就绪: {final_sess}")
+    except Exception as e:
+        print(f"[!] 创建目录遇到问题 ({e})，但已记录该路径。")
+    upsert_env_key("CODEX_SESSION_DIR", str(final_sess))
 
 
 def check_environment():
-    """【Step 2/4】基础运行环境检测 (Environment)。"""
+    """【Step 1/4】基础运行环境检测 (Environment)。"""
     print("\n" + "=" * 60)
-    print("          【Step 2/4】运行环境自检与依赖 (Environment)")
+    print("          【Step 1/4】运行环境自检与依赖 (Environment)")
     print("=" * 60)
     print()
 
@@ -436,8 +449,9 @@ def configure_autostart():
 
 
 def collect_init_status() -> dict:
-    """收集前三步初始化状态（工作空间 / 运行环境 / Codex 认证）。"""
+    """收集前三步初始化状态（运行环境 / 目录 / Codex 认证）。"""
     workspace = get_env_value("DEFAULT_WORKSPACE")
+    session_dir = get_env_value("CODEX_SESSION_DIR")
 
     node_version = ""
     if shutil.which("node"):
@@ -452,7 +466,8 @@ def collect_init_status() -> dict:
 
     return {
         "workspace": workspace,
-        "workspace_done": bool(workspace.strip()),
+        "session_dir": session_dir,
+        "workspace_done": bool(workspace.strip()) and bool(session_dir.strip()),
         "node_version": node_version,
         "codex_ready": codex_ready,
         "environment_done": bool(node_version) and codex_ready,
@@ -465,8 +480,8 @@ def run_init_steps(force: bool = False):
     """执行前三步初始化。force=True 全部重跑；否则只补跑未完成的步骤。"""
     status = collect_init_status()
     steps = [
-        ("workspace", "工作空间", confirm_workspaces),
         ("environment", "运行环境", check_environment),
+        ("workspace", "运行目录与会话目录", confirm_directories),
         ("model", "Codex 认证", check_or_setup_models),
     ]
     for key, label, fn in steps:
@@ -483,11 +498,12 @@ def show_init_config():
     print("        初始化配置信息（Step 1-3 初始化设置）")
     print("=" * 60)
     print()
-    print("  【Step 1 工作空间】")
-    print(f"    DEFAULT_WORKSPACE = {status['workspace'] or '(未配置)'}")
-    print("  【Step 2 运行环境】")
-    print(f"    Node.js     : {status['node_version'] or '未检测到（auto_feishu 需要 v20+）'}")
-    print(f"    Codex CLI   : {'已就绪' if status['codex_ready'] else '未检测到'}")
+    print("  【Step 1 运行环境】")
+    print(f"    Node.js         : {status['node_version'] or '未检测到（auto_feishu 需要 v20+）'}")
+    print(f"    Codex CLI       : {'已就绪' if status['codex_ready'] else '未检测到'}")
+    print("  【Step 2 目录】")
+    print(f"    初始运行目录 (DEFAULT_WORKSPACE) : {status['workspace'] or '(未配置)'}")
+    print(f"    会话目录     (CODEX_SESSION_DIR) : {status['session_dir'] or '(未配置，跟随当前工作区)'}")
     print("  【Step 3 Codex 账号认证】")
     print(f"    ChatGPT 登录态 (~/.codex/auth.json) : {'已就绪' if status['auth_ready'] else '未检测到'}")
     print()

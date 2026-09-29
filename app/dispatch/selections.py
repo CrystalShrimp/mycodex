@@ -21,7 +21,7 @@ from app.dispatch.commands import (
     _workspace_selection_payload,
 )
 from app.dispatch.context import ReplyContext
-from app.dispatch.helpers import get_project_meta, predict_continue_session
+from app.dispatch.helpers import get_project_meta, predict_continue_session, session_scope_dir
 from app.dispatch.sessions import session_manager, skey_for
 from app.profiles import VALID_EFFORTS, discover_models
 from app.state.preferences import preferences_manager
@@ -227,6 +227,9 @@ def handle_session_resume(target: UserTarget, skey: str, thread_id: str) -> str:
         session = session_manager.create_session(skey, target.chat_id)
     session.codex_thread_id = thread_id
     session.context_tokens = 0
+    scope_ws = session_scope_dir(session.workspace)
+    if settings.get_codex_session_dir() and scope_ws and scope_ws != session.workspace:
+        session.workspace = scope_ws
     session_manager.save_session(session)
     codex_cli_loop.cancel_by_user(skey)
     asyncio.get_running_loop().create_task(codex_cli_loop.cancel_and_wait(skey))

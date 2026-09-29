@@ -100,7 +100,7 @@ def fetch_chat_members(token: str, chat_id: str) -> list[str]:
         code = res.get("code")
         if code != 0:
             msg = res.get("msg", "")
-            if code in (230001, 230002):
+            if code in (230001, 230002, 232011):
                 raise RuntimeError(
                     f"机器人不在该群聊内 (code={code})。\n"
                     f"💡 解决方法：请先在飞书该群中点击右上角设置，将机器人添加进群后再试！"
@@ -118,6 +118,14 @@ def fetch_chat_members(token: str, chat_id: str) -> list[str]:
 
 
 def main() -> int:
+    # Windows 控制台/管道为 GBK 时，✅💡 等 emoji 会触发 UnicodeEncodeError，
+    # 统一切到 UTF-8（不可重配置时降级为替换字符，绝不因打印崩溃）
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     print("=" * 60)
     print("      飞书群聊成员一键导入白名单工具 (MyCodex)")
     print("=" * 60)

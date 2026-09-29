@@ -32,7 +32,9 @@ def _env_port(default: int = 8090) -> int:
 
 SERVICE_PORT = _env_port()
 HEALTH_URL = f"http://127.0.0.1:{SERVICE_PORT}/health"
-LOG_PATH = ROOT / "logs" / "mycodex.log"
+# 与 scripts/mac_common.sh 的 mac_start_service 同一日志，双击启动与菜单栏
+# 启动的日志都汇聚到同一处
+LOG_PATH = ROOT / "logs" / "macos-service.log"
 
 server: subprocess.Popen | None = None
 
@@ -114,10 +116,20 @@ def main() -> None:
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 with opener.open(HEALTH_URL, timeout=2) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                ws = "🟢 已连接" if data.get("ws_connected") else "🔴 未连接"
-                return f"✅ MyCodex 后端运行正常 (端口 {SERVICE_PORT})\n飞书长连接: {ws}"
+                lines = [f"✅ MyCodex 后端运行正常 (端口 {SERVICE_PORT})"]
+                channels = data.get("channels") or {}
+                if channels.get("feishu") is not None:
+                    lines.append(f"飞书长连接: {'🟢 已连接' if channels['feishu'].get('connected') else '🔴 未连接'}")
+                elif data.get("ws_connected"):
+                    lines.append("飞书长连接: 🟢 已连接")
+                else:
+                    lines.append("飞书长连接: 🔴 未连接")
+                wecom = channels.get("wecom")
+                if wecom is not None:
+                    lines.append(f"企微长连接: {'🟢 已连接' if wecom.get('connected') else '🔴 未连接'}")
+                return "\n".join(lines)
             except Exception as e:
-                return f"❌ 后端未响应 ({SERVICE_PORT} 端口): {e}\n详情请查看 logs/mycodex.log"
+                return f"❌ 后端未响应 ({SERVICE_PORT} 端口): {e}\n详情请查看 logs/macos-service.log"
 
         def on_tick(self, _sender):
             self.title = "●" if healthy() else "○"
@@ -128,6 +140,8 @@ def main() -> None:
         def on_log(self, _sender):
             if LOG_PATH.exists():
                 subprocess.Popen(["open", "-t", str(LOG_PATH)])
+            else:
+                rumps.alert(f"日志尚未生成：{LOG_PATH}")
 
         def on_quit(self, _sender):
             if server is not None and server.poll() is None:

@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Workspace（Codex 默认代码工程目录；未配置时跨平台智能回退）
     default_workspace: str = ""
 
+    # Codex 会话目录（固定读取该目录下的终端会话；留空 = 跟随当前工作区（/cd 后随之变化））
+    codex_session_dir: str = ""
+
     # Approval
     approval_timeout: int = 600           # Model selection card timeout (10 min)
     tool_approval_timeout: int = 1800     # Tool execution card timeout (30 min)
@@ -120,6 +123,10 @@ class Settings(BaseSettings):
 
     def get_allowed_group_ids(self) -> list[str]:
         return [g.strip() for g in self.allowed_group_ids.split(",") if g.strip()]
+
+    def get_codex_session_dir(self) -> str:
+        """返回配置的 Codex 会话目录（空 = 未固定，会话跟随当前工作区）。"""
+        return self.codex_session_dir.strip()
 
     def get_default_workspace(self) -> str:
         """返回已配置的工作空间路径，若未设置或不存在则优雅跨平台回退。"""
