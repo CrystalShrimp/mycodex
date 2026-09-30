@@ -82,6 +82,21 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
             mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
             mode_lbl = mode_labels.get(preferences.mode, preferences.mode)
 
+            reply = ReplyContext(target)
+            if pending == "__reset_only__":
+                msg_lines = [
+                    "🎉 初始配置已全部就绪！",
+                    "",
+                    "📋 当前运行设置：",
+                    f"• 模型 (Model)：`{model_label}`",
+                    f"• 推理强度 (Effort)：`{preferences.level}`",
+                    f"• 执行模式 (Mode)：`{mode_lbl}`",
+                    "",
+                    "💡 现在您可以直接发送消息开始对话。"
+                ]
+                await reply.text("\n".join(msg_lines))
+                return True
+
             prompt_preview = pending if len(pending) <= 30 else pending[:27] + "..."
             msg_lines = [
                 "🎉 初始配置已全部就绪！",
@@ -93,7 +108,6 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
                 "",
                 f"正在全自动为您执行暂存的任务：`{prompt_preview}` ..."
             ]
-            reply = ReplyContext(target)
             await reply.text("\n".join(msg_lines))
             asyncio.get_running_loop().create_task(_run_codex(pending, target, session))
             return True
@@ -153,10 +167,39 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             await reply.text("没有正在运行的任务。")
         return
 
-    # --- /reset: reset all setup preferences for testing ---
+    # --- /reset: reset all setup preferences and immediately pop up setup cards ---
     if text_lower in ("/reset", "重置"):
+        await codex_cli_loop.cancel_and_wait(skey)
         preferences_manager.clear(open_id)
-        await reply.text("已清空所有初始设置（Model / Effort / Mode）。")
+        session = session_manager.get_user_session(skey)
+        if not session:
+            session = session_manager.create_session(skey, target.chat_id)
+        if not session.pending_prompt.strip():
+            session.pending_prompt = "__reset_only__"
+            session_manager.save_session(session)
+
+        models = discover_models()
+        reset_views: list[tuple[str, dict]] = [
+            ("model_selection", {
+                "approval_id": uuid.uuid4().hex[:12],
+                "models": models,
+                "current_model": "",
+            }),
+            ("effort_selection", {
+                "approval_id": uuid.uuid4().hex[:12],
+                "current_effort": "",
+            }),
+            ("mode_selection", {
+                "approval_id": uuid.uuid4().hex[:12],
+                "active_mode": "",
+            }),
+        ]
+        for kind, payload in reset_views:
+            await reply.view(kind, **payload)
+
+        await reply.text(
+            "🔄 已重置初始运行配置，请直接在上方卡片中重新点选（Model / Effort / Mode）：",
+        )
         return
 
     # --- /status ---
