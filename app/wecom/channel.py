@@ -21,7 +21,7 @@ from config.settings import settings
 logger = logging.getLogger("mycodex.wecom.channel")
 
 # 企微硬限制：会话 30 条/分钟；流式消息 10 分钟内必须 finish
-_STREAM_MIN_INTERVAL = 2.5
+_STREAM_MIN_INTERVAL = 3.0
 _STREAM_RATE_LIMIT = 30
 _STREAM_RATE_WINDOW = 60.0
 _STREAM_ROLL_AFTER = 570.0  # 9.5min 主动换流，留 30s 余量
@@ -40,7 +40,7 @@ class WeComProgressHandle:
 
     同一 stream.id 推送刷新、finish=true 结束；10 分钟硬超时前自动换流
     续传；30 条/分钟滑动窗口限流，超限丢弃中间帧（终态不受限流保护跳过，
-    但也不强行突破平台限制）。
+    但也不强行突破平台限制）。加入内容级去重与 3.0s 节流以防客户端闪烁。
     """
 
     def __init__(self, client: WeComClient, req_id: str, fallback: "WeComChannel", target: UserTarget) -> None:
@@ -53,6 +53,7 @@ class WeComProgressHandle:
         self._last_push = 0.0
         self._window: deque[float] = deque()
         self._last_status = ""
+        self._last_content = ""
         self._finished = False
 
     def _rate_ok(self, now: float) -> bool:
@@ -96,14 +97,21 @@ class WeComProgressHandle:
         if self._finished:
             return
         now = time.monotonic()
-        if snap.status == self._last_status and now - self._last_push < _STREAM_MIN_INTERVAL:
+        content = wc.render_progress_text(snap)
+        # 内容级去重：若渲染文本与上一帧完全一致，且未到达换流硬超时，直接跳过
+        need_roll = now - self._stream_started > _STREAM_ROLL_AFTER
+        if content == self._last_content and not need_roll:
+            return
+        # 最小间隔节流：两次推送至少间隔 3.0 秒
+        if now - self._last_push < _STREAM_MIN_INTERVAL:
             return
         if not self._rate_ok(now):
             return
         try:
-            await self._push_with_fallback(wc.render_progress_text(snap), finish=False)
+            await self._push_with_fallback(content, finish=False)
             self._last_push = now
             self._last_status = snap.status
+            self._last_content = content
         except Exception as e:
             logger.debug("WeCom progress update failed (non-fatal): %s", e)
 
@@ -112,7 +120,9 @@ class WeComProgressHandle:
             return
         self._finished = True
         try:
-            await self._push_with_fallback(wc.render_progress_text(snap), finish=True)
+            content = wc.render_progress_text(snap)
+            await self._push_with_fallback(content, finish=True)
+            self._last_content = content
         except Exception as e:
             logger.debug("WeCom progress finish failed (non-fatal): %s", e)
 

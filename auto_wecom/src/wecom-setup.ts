@@ -637,43 +637,96 @@ async function applyUseModeInForm(page: Page, config: LoadedConfig, mode: "perso
       logger.warn(`下拉列表中未找到「${targetOptionText}」选项，保持当前默认状态。`);
     }
 
-    // 若为公用模式（多人使用），确保可见范围已添加（若未添加，点击「添加」勾选顶层企业节点）
+    // 公用模式（多人使用）：可见范围必须覆盖全企业。无论当前是否已有标签都
+    // 走一遍「添加」弹窗核对根节点（勾选前先判态，避免把已勾选的根节点反选掉）。
     if (mode === "public") {
-      const addScopeBtn = page.locator(".use-mode button:has-text('添加'), .visible_selector button:has-text('添加')").first();
+      // 后台实际 DOM：范围入口是 .visible_selector 内的 .add_btn / .modify_btn
+      // （span 链接样式而非 <button>，2026-10-03 实测 button:has-text 匹配不到；
+      //   已有范围时按钮文案变为「修改」，两个都要匹配）
+      const addScopeBtn = page.locator(
+        ".visible_selector .add_btn, .visible_selector .modify_btn, .use-mode .add_btn, .use-mode .modify_btn"
+      ).first();
       if (await addScopeBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-        // 检查是否已有已选标签
-        const hasTags = await page.locator(".use-mode .range_tag_list > *, .visible_selector .range_tag_list > *").count().catch(() => 0);
-        if (hasTags === 0) {
-          logger.info("公用模式：正在点击可见范围「添加」选择全企业范围...");
-          await addScopeBtn.click({ timeout: 5000 }).catch(() => undefined);
-          await page.waitForTimeout(1200);
+        const tagCount = await page.locator(".use-mode .range_tag_list > *, .visible_selector .range_tag_list > *").count().catch(() => 0);
+        logger.info(`公用模式：核对/补全可见范围（当前已选标签 ${tagCount} 个，目标为全企业根节点）...`);
+        await addScopeBtn.click({ timeout: 5000 }).catch(() => undefined);
+        await page.waitForTimeout(1200);
 
-          const dlg = page.locator(".t-dialog:visible, [role='dialog']:visible, .ww_dialog:visible").first();
-          if (await dlg.isVisible({ timeout: 3000 }).catch(() => false)) {
-            // 尝试点击弹窗左侧树中的第一个顶层部门节点或复选框
-            const rootSelectors = [
-              ".jstree-anchor",
-              ".ww_treeSelector_item",
-              ".t-tree__item .t-checkbox",
-              ".t-tree__item",
-              "input[type='checkbox']",
-            ];
-            for (const sel of rootSelectors) {
-              const firstNode = dlg.locator(sel).first();
-              if (await firstNode.isVisible({ timeout: 800 }).catch(() => false)) {
+        const dlg = page.locator(".t-dialog:visible, [role='dialog']:visible, .ww_dialog:visible").first();
+        if (await dlg.isVisible({ timeout: 3000 }).catch(() => false)) {
+          if (DEBUG_ENABLED) {
+            const stamp = Date.now();
+            const htmlPath = path.join(config.htmlDumpDir ?? ".", `scope-dialog-${stamp}.html`);
+            const shotPath = path.join(config.screenshotsDir ?? ".", `scope-dialog-${stamp}.png`);
+            await mkdir(path.dirname(htmlPath), { recursive: true }).catch(() => undefined);
+            const dlgHtml = await dlg.evaluate((el) => el.outerHTML).catch(() => "");
+            await writeFile(htmlPath, dlgHtml, "utf8").catch(() => undefined);
+            await page.screenshot({ path: shotPath, fullPage: true }).catch(() => undefined);
+            logger.info(`[debug] 可见范围弹窗已转储：${htmlPath}`);
+          }
+          // 弹窗左侧树中的第一个顶层部门节点（jstree：勾选态挂在 li.jstree-node 的 class 上）
+          const rootSelectors = [
+            ".jstree-anchor",
+            ".ww_treeSelector_item",
+            ".t-tree__item .t-checkbox",
+            ".t-tree__item",
+            "input[type='checkbox']",
+          ];
+          for (const sel of rootSelectors) {
+            const firstNode = dlg.locator(sel).first();
+            if (await firstNode.isVisible({ timeout: 800 }).catch(() => false)) {
+              const state = await firstNode.evaluate((el) => {
+                const cb = el.matches("input[type='checkbox']") ? el : el.querySelector("input[type='checkbox']");
+                if (cb instanceof HTMLInputElement) return cb.checked ? "checked" : "unchecked";
+                const li = el.closest("li.jstree-node, .t-tree__item, .ww_treeSelector_item");
+                const holder = li ?? el;
+                const cls = holder.getAttribute("class") || "";
+                if (/jstree-checked|is-checked|checked|selected|active/i.test(cls)) return "checked";
+                return "unchecked";
+              }).catch(() => "unknown");
+              if (state !== "checked") {
                 await firstNode.click({ timeout: 3000 }).catch(() => undefined);
                 await page.waitForTimeout(500);
-                break;
+              } else {
+                logger.info("可见范围根节点已处于勾选状态，保持不动。");
               }
-            }
-            // 点击弹窗内的「确定」
-            const confirmBtn = dlg.locator("button:has-text('确定'), a:has-text('确定')").first();
-            if (await confirmBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
-              await confirmBtn.click({ timeout: 5000 }).catch(() => undefined);
-              await page.waitForTimeout(800);
+              break;
             }
           }
+          // 复核右侧已选列表出现组织节点（非 member 条目）
+          const orgPicked = await dlg.locator(".js_right_col li[data-type]:not([data-type='member'])").count().catch(() => 0);
+          if (orgPicked > 0) {
+            logger.info(`可见范围右侧已选列表出现组织节点（${orgPicked} 项），正在提交...`);
+          } else {
+            logger.warn("未能确认右侧已选列表出现组织节点，仍尝试提交。");
+          }
+          if (DEBUG_ENABLED) {
+            const stamp = Date.now();
+            const afterPath = path.join(config.htmlDumpDir ?? ".", `scope-dialog-after-${stamp}.html`);
+            const dlgHtml2 = await dlg.evaluate((el) => el.outerHTML).catch(() => "");
+            await writeFile(afterPath, dlgHtml2, "utf8").catch(() => undefined);
+            logger.info(`[debug] 交互后弹窗已转储：${afterPath}`);
+          }
+          // 确认按钮：本后台文案为「确认」(#footer_submit_btn/.js_submit)；兼容「确定」皮肤
+          const confirmBtn = dlg.locator(
+            "#footer_submit_btn, .ww_dialog_foot .js_submit, a:has-text('确认'), button:has-text('确定'), a:has-text('确定')"
+          ).first();
+          if (await confirmBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+            try {
+              await confirmBtn.click({ timeout: 5000 });
+              await page.waitForTimeout(800);
+              logger.info("可见范围弹窗已点击「确认」。");
+            } catch (e) {
+              logger.warn(`「确认」点击失败（勾选未提交）：${e instanceof Error ? e.message : String(e)}`);
+            }
+          } else {
+            logger.warn("可见范围弹窗未找到「确认/确定」按钮，勾选未提交。");
+          }
+        } else {
+          logger.warn("公用模式：可见范围「添加」弹窗未出现，未能自动核对/补全（保存后将复核）。");
         }
+      } else {
+        logger.warn("公用模式：未见可见范围「添加」按钮，未能自动核对/补全（保存后将复核）。");
       }
     }
   } catch (e) {
@@ -682,23 +735,61 @@ async function applyUseModeInForm(page: Page, config: LoadedConfig, mode: "perso
 }
 
 /**
- * 复用已有机器人时，在详情页检查「可使用方式」是否与目标模式一致；
- * 若不一致（例如个人用模式变成公用模式，或反之），自动点击右上角「编辑」进行切换并保存。
+ * 判断公用模式的可见范围是否覆盖全企业（读 visiable_range 全对象）：
+ * - true  = visible_partyids / visible_tagids 任一非空（含部门/组织节点），或成员里含组织项
+ * - false = 三维全空，或仅有个别成员（成员 acctid）而无组织节点
+ * - null  = 未捕获到 getAIRobotDetail 响应（无法判断）
+ * 注意：visible_vids 只列成员维度，部门在 visible_partyids——只读 vids 会误报未覆盖（2026-10-03 实测）。
  */
-async function ensureBotUseModeOnDetail(page: Page, config: LoadedConfig, mode: "personal" | "public", currentName: string): Promise<void> {
+function publicScopeLooksFull(range: Record<string, unknown> | null): boolean | null {
+  if (!range) return null;
+  const cnt = (x: unknown) => (Array.isArray(x) ? x.length : 0);
+  if (cnt(range.visible_partyids) > 0 || cnt(range.visible_tagids) > 0) return true;
+  const vids = range.visible_vids;
+  if (!Array.isArray(vids)) return null;
+  if (vids.length === 0) return false;
+  return vids.some((it) => !(it && typeof it === "object" && typeof (it as Record<string, unknown>).acctid === "string" && String((it as Record<string, unknown>).acctid).trim()));
+}
+
+/**
+ * 复用已有机器人时，在详情页检查「可使用方式」与可见范围是否与目标一致；
+ * 公用模式除使用方式外还程序化核对 visiable_range（2026-10-03 事故：使用方式已是
+ * 多人使用但可见范围从未补全，群成员被企微客户端以「不在通讯录可见范围」拒绝）。
+ */
+async function ensureBotUseModeOnDetail(
+  page: Page,
+  config: LoadedConfig,
+  mode: "personal" | "public",
+  currentName: string,
+  scopeCapture: { range: Record<string, unknown> | null; updatedAt: number },
+  onWarning: (msg: string) => void,
+): Promise<void> {
   try {
+    // 等待详情页的 getAIRobotDetail XHR 落进 scopeCapture
+    await page.waitForTimeout(1500);
     const bodyText = await page.locator("body").innerText({ timeout: 5000 });
     const isCurrentlyPersonal = bodyText.includes("仅个人使用");
     const modeMatched = (mode === "personal" && isCurrentlyPersonal) || (mode === "public" && !isCurrentlyPersonal);
     const nameMatched = currentName.trim() === config.botName.trim();
-    if (modeMatched && nameMatched) {
-      logger.info(`当前机器人名称（${config.botName}）与使用方式（${mode === "personal" ? "仅个人使用" : "多人/公用"}）均已符合目标。`);
+    const scopeOk = mode === "public" ? publicScopeLooksFull(scopeCapture.range) : true;
+
+    if (mode === "public" && scopeOk === false) {
+      const cnt = (x: unknown) => (Array.isArray(x) ? x.length : 0);
+      const r = scopeCapture.range ?? {};
+      logger.warn(`可见范围未覆盖全企业（部门 ${cnt(r.visible_partyids)} / 成员 ${cnt(r.visible_vids)}，无组织节点），进入编辑补全。`);
+    }
+    if (modeMatched && nameMatched && scopeOk !== false) {
+      if (mode === "public" && scopeOk === null) {
+        logger.info("使用方式已符合目标；未能通过接口确认可见范围，若群成员被拒请人工核对。");
+      } else {
+        logger.info(`当前机器人名称（${config.botName}）与使用方式（${mode === "personal" ? "仅个人使用" : "多人/公用"}）均已符合目标。`);
+      }
       return;
     }
 
     const editBtn = page.locator("button:has-text('编辑')").first();
     if (!(await editBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
-      logger.warn("详情页未找到「编辑」按钮，跳过名称/使用方式更新。");
+      logger.warn("详情页未找到「编辑」按钮，跳过名称/使用方式/可见范围更新。");
       return;
     }
 
@@ -716,11 +807,36 @@ async function ensureBotUseModeOnDetail(page: Page, config: LoadedConfig, mode: 
 
     await applyUseModeInForm(page, config, mode);
 
-    const saveBtn = page.locator("button.navi_button:has-text('保存'), button.t-button--theme-primary:has-text('保存'), button:has-text('保存')").first();
+    const saveStartedAt = Date.now();
+    const saveBtn = page.locator(
+      "button.navi_button:has-text('保存'), button.t-button--theme-primary:has-text('保存'), button:has-text('保存'), a.ww_btn_Blue:has-text('保存'), a:has-text('保存')"
+    ).first();
     if (await saveBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await saveBtn.click({ timeout: 5000 }).catch(() => undefined);
-      await page.waitForTimeout(4000);
-      logger.info("已保存机器人编辑变更。");
+      try {
+        await saveBtn.click({ timeout: 5000 });
+        await page.waitForTimeout(4000);
+        logger.info("已保存机器人编辑变更。");
+      } catch (e) {
+        logger.warn(`保存按钮点击失败（可能被弹窗遮挡，变更未保存）：${e instanceof Error ? e.message : String(e)}`);
+      }
+    } else {
+      logger.warn("编辑页未找到「保存」按钮，变更未保存。");
+    }
+
+    // 保存后复核：详情页重新加载会触发 getAIRobotDetail，用接口数据验证可见范围
+    if (mode === "public") {
+      await page.waitForTimeout(1500);
+      if (scopeCapture.updatedAt > saveStartedAt) {
+        if (publicScopeLooksFull(scopeCapture.range) === false) {
+          const msg = "保存后接口复核：机器人可见范围仍未覆盖全企业。群成员会报「不在通讯录可见范围内，无法聊天」。请到管理后台 智能机器人→编辑→可见范围 手动添加全企业后保存。";
+          logger.warn(msg);
+          onWarning(msg);
+        } else {
+          logger.info("保存后接口复核：可见范围已含组织节点，覆盖正常。");
+        }
+      } else {
+        logger.warn("保存后未捕获到新的详情接口响应，无法复核可见范围；如群成员被拒请人工核对。");
+      }
     }
   } catch (e) {
     logger.warn(`详情页核对/切换使用方式异常：${e instanceof Error ? e.message : String(e)}`);
@@ -761,12 +877,31 @@ async function main(): Promise<void> {
   }
   page.setDefaultTimeout(config.timeoutMs);
 
-  // 监听 getAIRobotDetail 接口，自动捕获创建者本人的企业微信 userid (acctid)
+  // 监听 getAIRobotDetail 接口，自动捕获创建者本人的企业微信 userid (acctid)，
+  // 并捕获可见范围（visiable_range.visible_vids）供复用路径程序化核对覆盖面
+  const scopeCapture: { range: Record<string, unknown> | null; updatedAt: number } = { range: null, updatedAt: 0 };
   page.on("response", async (resp: Response) => {
     try {
       if (!resp.url().includes("getAIRobotDetail")) return;
       const data = await resp.json().catch(() => null);
-      const vids = data?.data?.aibot_profile?.robot_config?.visiable_range?.visible_vids;
+      const vrange = data?.data?.aibot_profile?.robot_config?.visiable_range;
+      const vids = vrange?.visible_vids;
+      if (vrange && typeof vrange === "object") {
+        scopeCapture.range = vrange as Record<string, unknown>;
+        scopeCapture.updatedAt = Date.now();
+        try {
+          const cnt = (x: unknown) => (Array.isArray(x) ? x.length : 0);
+          logger.info(
+            `[scope] 可见范围：部门 ${cnt(scopeCapture.range.visible_partyids)}，` +
+            `成员 ${cnt(scopeCapture.range.visible_vids)}，标签 ${cnt(scopeCapture.range.visible_tagids)}`
+          );
+          if (DEBUG_ENABLED) {
+            logger.info(`[scope] 原始返回：${JSON.stringify(vrange)?.slice(0, 500)}`);
+          }
+        } catch {
+          /* 摘要日志失败不影响主流程 */
+        }
+      }
       if (Array.isArray(vids)) {
         for (const item of vids) {
           if (item && typeof item === "object" && typeof item.acctid === "string" && item.acctid.trim()) {
@@ -896,7 +1031,7 @@ async function main(): Promise<void> {
     try {
       await openBotDetail(page, config, chosen);
       if (result.reused) {
-        await ensureBotUseModeOnDetail(page, config, DEPLOY_MODE, chosen);
+        await ensureBotUseModeOnDetail(page, config, DEPLOY_MODE, chosen, scopeCapture, (m) => result.warnings.push(m));
       }
       const cred = await extractCredentials(page);
       if (!cred.longConnection) {

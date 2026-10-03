@@ -50,21 +50,16 @@ def render_progress_text(snap: ProgressSnap) -> str:
             parts.append(snap.result_text.strip())
         return "\n\n".join(parts)
 
-    # running / retrying 过程状态
+    # running / retrying 过程状态（企微防抖规范：恒定单/双行，不带秒数，不输出多行截断日志）
     icon = "🔁" if snap.status == "retrying" else "🔄"
-    head = "API 重试中" if snap.status == "retrying" else "思考执行中"
-    lines = [f"{icon} **{head}** ({snap.elapsed_s:.0f}s)"]
-    if snap.tool_counts:
-        tools = " · ".join(f"{k}×{v}" for k, v in list(snap.tool_counts.items())[:5])
-        lines.append(f"🛠️ 工具: {tools}")
+    head = "API 重试中…" if snap.status == "retrying" else "思考执行中…"
+    lines = [f"{icon} **{head}**"]
     if snap.current_tool:
-        args = f" {snap.current_tool_args}" if snap.current_tool_args else ""
-        lines.append(f"▶️ 当前: `{snap.current_tool}`{args}")
-    if snap.last_text:
-        text = snap.last_text.strip()
-        if len(text) > 200:
-            text = text[-200:]
-        lines.append(f"\n{text}")
+        args = f" ({snap.current_tool_args[:30]}…)" if snap.current_tool_args else ""
+        lines.append(f"🛠️ 正在执行: `{snap.current_tool}`{args}")
+    elif snap.tool_counts:
+        tools = " · ".join(f"{k}×{v}" for k, v in list(snap.tool_counts.items())[:4])
+        lines.append(f"🛠️ 已调用: {tools}")
     return "\n".join(lines)
 
 

@@ -9,12 +9,19 @@
 3. 脚本实时捕获该群的 chatid 与发言人的 userid，并在群内自动回复绑定成功确认；
 4. 将捕获到的群 chatid 写入 .env 的 WECOM_ALLOWED_CHATS，并将操作者本人写入 WECOM_ALLOWED_USERS；
 5. 服务运行时，凡在该授权群内发言的成员均直接放行，且自动收录其 userid 以开放单聊权限。
+
+注意：企微机器人为单连接（新订阅会踢掉旧连接）。若本地网关服务正在运行，本脚本会
+先暂停服务以独占连接，绑定完成后自动恢复（恢复重启同时让新白名单生效）。
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
 import sys
+import time
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -64,6 +71,77 @@ def upsert_env(key: str, value: str) -> None:
     if not updated:
         lines.append(replacement)
     ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def is_local_service_running() -> bool:
+    """探测本地网关服务是否在运行（显式禁用代理，避免健康检查被代理劫持误判）。"""
+    raw = get_env_value("PORT").strip()
+    try:
+        port = int(raw) if raw else 8080
+    except ValueError:
+        port = 8080
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{port}/health", timeout=2) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def stop_local_service() -> None:
+    """暂停本地网关服务以独占企微机器人长连接（win: stop_*.ps1 / mac: stop_mac.sh）。"""
+    if sys.platform == "win32":
+        candidates = sorted((ROOT_DIR / "scripts").glob("stop_*.ps1"))
+        if not candidates:
+            raise RuntimeError("未找到 scripts/stop_*.ps1")
+        subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-File", str(candidates[0]), "-CallerPid", str(os.getpid())],
+            capture_output=True, text=True,
+        )
+    else:
+        candidates = sorted((ROOT_DIR / "scripts").glob("stop_mac*.sh"))
+        if not candidates:
+            raise RuntimeError("未找到 scripts/stop_mac.sh")
+        subprocess.run(["bash", str(candidates[0])], capture_output=True, text=True)
+    time.sleep(1)
+
+
+def start_local_service() -> bool:
+    """恢复本地网关服务并等待健康检查通过；返回是否成功。"""
+    if sys.platform != "win32":
+        candidates = sorted((ROOT_DIR / "scripts").glob("restart_mac*.sh"))
+        if not candidates:
+            print("[!] 未找到 scripts/restart_mac.sh，请手动重启服务。")
+            return False
+        # restart_mac.sh 自带停旧→起新→等健康检查（含 60s 等待），阻塞执行完成后即在线
+        subprocess.run(["bash", str(candidates[0])], cwd=str(ROOT_DIR), capture_output=True, text=True)
+        print("[*] 正在恢复本地服务...")
+        for _ in range(20):
+            time.sleep(1)
+            if is_local_service_running():
+                print("[OK] 本地服务已恢复在线（新白名单已随之生效）。")
+                return True
+        print("[!] 服务未恢复在线，请手动运行 scripts/restart_mac.sh。")
+        return False
+    mains = [b for b in sorted((ROOT_DIR / "launcher_windows").glob("*.bat"))
+             if not b.name.endswith("-Setup.bat") and not b.name.endswith("-Restart.bat")]
+    if not mains:
+        print("[!] 未找到主启动脚本 launcher_windows/*.bat，请手动启动服务。")
+        return False
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+         f"Start-Process -FilePath '{mains[0]}' -WorkingDirectory '{ROOT_DIR}'"],
+        capture_output=True, text=True,
+    )
+    print("[*] 正在恢复本地服务...")
+    for _ in range(30):
+        time.sleep(1)
+        if is_local_service_running():
+            print("[OK] 本地服务已恢复在线（新白名单已随之生效）。")
+            return True
+    print("[!] 服务未在 30 秒内恢复在线，请手动运行 launcher_windows 下的主启动脚本。")
+    return False
 
 
 async def listen_for_group_message(bot_id: str, secret: str, timeout_sec: int = 180) -> tuple[str, str]:
@@ -175,7 +253,13 @@ def main() -> int:
                     existing_chats.append(c)
                     print(f"[OK] 已添加群聊 chatid: {c}")
         elif choice == "1":
+            paused_service = False
             try:
+                if is_local_service_running():
+                    print("\n[*] 检测到本地服务正在占用企微机器人长连接（企微单连接，互踢会导致监听失聪），")
+                    print("    已暂停服务以独占连接，绑定完成后自动恢复（恢复重启同时让新白名单生效）。")
+                    stop_local_service()
+                    paused_service = True
                 chatid, userid = asyncio.run(listen_for_group_message(bot_id, secret))
                 if chatid not in existing_chats:
                     existing_chats.append(chatid)
@@ -194,6 +278,12 @@ def main() -> int:
                             existing_chats.append(c)
             except Exception as e:
                 print(f"\n[!] 实时监听未能捕获群聊: {e}")
+            finally:
+                if paused_service:
+                    try:
+                        start_local_service()
+                    except Exception as exc:
+                        print(f"[!] 服务自动恢复异常（{exc}），请手动运行 launcher_windows 主启动脚本。")
         else:
             print("[!] 无效选项。")
             continue

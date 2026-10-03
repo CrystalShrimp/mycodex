@@ -43,6 +43,11 @@ mac_stop_service() {
         [ -z "$pid" ] && continue
         [ "$pid" = "$me" ] && continue
         case "$cmd" in
+            # 交互式配置脚本不是服务进程：restart 与企微群绑定正是由它们触发，
+            # 且其命令行含项目根路径，不排除会误杀自身（与 stop_mycodex.ps1 同口径）。
+            *setup_wizard.py*|*import_wecom_group.py*)
+                continue
+                ;;
             *"$MAC_ROOT"*)
                 kill "$pid" 2>/dev/null && killed=$((killed+1)) && echo "killed $pid ${cmd:0:60}"
                 ;;

@@ -16,10 +16,12 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path.ToLower()
 $procs = Get-CimInstance Win32_Process | Where-Object {
     $_.Name -match 'python' -and
     $_.ProcessId -ne $CallerPid -and
-    # Never kill the interactive setup wizard: restart is triggered BY the wizard.
-    # (The wizard runs under .venv\Scripts\python.exe whose ExecutablePath also
-    #  contains the project root and would otherwise match.)
-    -not ($_.CommandLine -and $_.CommandLine -match 'setup_wizard\.py') -and
+    # Never kill interactive scripts: the setup wizard triggers restarts, and
+    # import_wecom_group.py must survive its own stop_local_service() call
+    # (it pauses the service to own the WeCom single connection while binding).
+    # Both run under .venv\Scripts\python.exe whose ExecutablePath contains the
+    # project root and would otherwise match.
+    -not ($_.CommandLine -and $_.CommandLine -match 'setup_wizard\.py|import_wecom_group\.py') -and
     (
         ($_.CommandLine -and $_.CommandLine.ToLower().Contains($root)) -or
         ($_.ExecutablePath -and $_.ExecutablePath.ToLower().Contains($root))
