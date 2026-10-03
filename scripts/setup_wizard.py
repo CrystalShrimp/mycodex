@@ -266,7 +266,7 @@ def configure_initial_preferences():
 
     current = preferences_manager.get_global()
     models = discover_models()
-    model_keys = list(models.keys()) if models else ["gpt-5.4", "gpt-5.3-codex", "gpt-5.2-codex"]
+    model_keys = list(models.keys()) if models else ["gpt-6-luna", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"]
     default_model = current.model if current.model in model_keys else model_keys[0]
 
     print("\n" + "-" * 60)

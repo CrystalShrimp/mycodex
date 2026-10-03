@@ -462,48 +462,59 @@ async function createNewBot(page: Page, config: LoadedConfig, prompt: readline.I
       })()`)
       .catch(() => "");
   if (!/[A-Za-z0-9_-]{30,}/.test(await secretAreaText())) {
+    // 实测元素是 <span class="sdk-get-secret">点击获取</span>（非 button/a，
+    // 2026-10-03 实测 button/a 选择器全空，靠 getByText 兜底点击后生成偶发不触发）
     let genClicked = false;
-    for (const sel of ["button:has-text('点击获取')", "a:has-text('点击获取')", "button:has-text('生成')"]) {
-      const c = page.locator(sel);
-      const n = Math.min(await c.count().catch(() => 0), 5);
-      for (let i = 0; i < n; i++) {
-        const el = c.nth(i);
-        if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
-          await el.click({ timeout: config.timeoutMs }).catch(() => undefined);
-          genClicked = true;
-          break;
-        }
-      }
-      if (genClicked) break;
-    }
-    if (!genClicked) {
-      const fb = page.getByText(/点击获取|生成\s*Secret/).first();
-      if (await fb.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await fb.click({ timeout: 5000 }).catch(() => undefined);
-        genClicked = true;
-      }
-    }
-    if (genClicked) {
-      logger.info("已点击 Secret「点击获取」，等待生成...");
-      await page.waitForTimeout(1500);
-      // 可能弹确认框（只在弹窗容器内找按钮，绝不点页面级元素——左侧导航的「退出」是登出）
-      const dlg = page.locator("[class*='dialog']:visible, [class*='modal']:visible, [role='dialog']:visible").first();
-      if (await dlg.isVisible({ timeout: 2000 }).catch(() => false)) {
-        for (const t of ["确定", "生成", "确认"]) {
-          const btn = dlg.getByText(t, { exact: true }).first();
-          if (await btn.isVisible({ timeout: 800 }).catch(() => false)) {
-            await btn.click({ timeout: 5000 }).catch(() => undefined);
+    for (let attempt = 1; attempt <= 3 && !genClicked; attempt++) {
+      for (const sel of [".sdk-get-secret", "button:has-text('点击获取')", "a:has-text('点击获取')", "span:has-text('点击获取')", "button:has-text('生成')"]) {
+        const c = page.locator(sel);
+        const n = Math.min(await c.count().catch(() => 0), 5);
+        for (let i = 0; i < n; i++) {
+          const el = c.nth(i);
+          if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+            await el.click({ timeout: config.timeoutMs }).catch(() => undefined);
+            genClicked = true;
             break;
           }
         }
+        if (genClicked) break;
       }
-      await page.waitForTimeout(2000);
+      if (!genClicked) {
+        const fb = page.getByText(/点击获取|生成\s*Secret/).first();
+        if (await fb.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await fb.click({ timeout: 5000 }).catch(() => undefined);
+          genClicked = true;
+        }
+      }
+      if (!genClicked) break;
+      logger.info(`已点击 Secret「点击获取」（第 ${attempt} 次），等待生成...`);
+      // 轮询最长 8 秒；期间若弹确认框只在弹窗容器内点（绝不点页面级元素——左侧导航的「退出」是登出）
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        await page.waitForTimeout(1000);
+        if (/[A-Za-z0-9_-]{30,}/.test(await secretAreaText())) break;
+        const dlg = page.locator("[class*='dialog']:visible, [class*='modal']:visible, [class*='popup']:visible, [class*='popover']:visible, [role='dialog']:visible").first();
+        if (await dlg.isVisible({ timeout: 300 }).catch(() => false)) {
+          for (const t of ["确定", "生成", "确认"]) {
+            const btn = dlg.getByText(t, { exact: true }).first();
+            if (await btn.isVisible({ timeout: 500 }).catch(() => false)) {
+              await btn.click({ timeout: 5000 }).catch(() => undefined);
+              logger.info(`已在 Secret 确认弹窗中点击「${t}」。`);
+              break;
+            }
+          }
+        }
+      }
+      if (/[A-Za-z0-9_-]{30,}/.test(await secretAreaText())) break;
+      const t2 = await harvestVisibleNotices(page);
+      logger.warn(`第 ${attempt} 次点击后 Secret 仍未生成${t2 ? `（提示：${t2}）` : ""}${attempt < 3 ? "，重试..." : ""}`);
+      genClicked = false;
     }
     const secretNow = await secretAreaText();
     if (!/[A-Za-z0-9_-]{30,}/.test(secretNow)) {
       const toast = await harvestVisibleNotices(page);
       const art = await saveArtifacts(page, config, "创建-Secret未生成");
-      throw new Error(`未能生成 Secret（保存会被拦截）。区域文本：「${secretNow}」${toast ? `；页面提示：${toast}` : ""}。截图：${art.screenshotPath ?? "无"}`);
+      throw new Error(`未能生成 Secret（已重试 3 次，保存会被拦截）。区域文本：「${secretNow}」${toast ? `；页面提示：${toast}` : ""}。截图：${art.screenshotPath ?? "无"}`);
     }
     logger.info("Secret 已生成（保存拦截解除）。");
   }

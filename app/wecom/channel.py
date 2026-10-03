@@ -235,7 +235,11 @@ class WeComChannel:
         handle = WeComProgressHandle(self._client, req_id, self, target)
         # 首帧立即推送（建立流式消息）
         try:
-            await handle._push_with_fallback(wc.render_progress_text(snap), finish=False)
+            content = wc.render_progress_text(snap)
+            await handle._push_with_fallback(content, finish=False)
+            handle._last_content = content
+            handle._last_push = time.monotonic()
+            handle._last_status = snap.status
         except Exception as e:
             logger.warning("WeCom open_progress first push failed: %s", e)
         return handle
