@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -74,55 +75,83 @@ class FeishuClient:
             "Content-Type": "application/json",
         }
 
+    async def _post_message(
+        self,
+        payload: dict,
+        receive_id_type: str,
+        action: str,
+        *,
+        raise_on_error: bool,
+    ) -> dict:
+        """发消息统一入口。
+
+        新建应用发版后，OpenAPI 权限生效存在分钟级传播延迟（99991672）——
+        收消息（WS 事件）往往先通、发送权限后通。撞上该窗口时退避重试
+        （15s 后每 60s 一次，最长约 30 分钟），让消息"迟到但不丢"。
+        """
+        delays = [15] + [60] * 29
+        waited = False
+        for delay in delays:
+            headers = await self._api_headers()
+            resp = await self._http.post(
+                f"{API_BASE}/im/v1/messages",
+                params={"receive_id_type": receive_id_type},
+                headers=headers,
+                json=payload,
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                if waited:
+                    logger.info("%s：权限已生效，迟到的消息已送达。", action)
+                return data
+            if data.get("code") == 99991663:
+                await self._refresh_token()
+                continue
+            if data.get("code") == 99991672:
+                if not waited:
+                    logger.info(
+                        "%s：应用权限在 OpenAPI 传播中（99991672），退避重试，就绪后自动送达...",
+                        action,
+                    )
+                    waited = True
+                await asyncio.sleep(delay)
+                continue
+            logger.error("%s failed: %s", action, data)
+            if raise_on_error:
+                raise RuntimeError(f"{action} failed: code={data.get('code')} msg={data.get('msg')}")
+            return data
+        logger.error("%s failed: 权限传播等待超时（约 30 分钟）", action)
+        if raise_on_error:
+            raise RuntimeError(f"{action} failed: 权限传播等待超时（约 30 分钟）")
+        return {"code": -1, "msg": "permission propagation timeout"}
+
     async def send_text(self, receive_id: str, text: str, *, is_chat: bool = False) -> dict:
         """Send a text message to a user or chat."""
-        receive_id_type = "chat_id" if is_chat else "open_id"
-        headers = await self._api_headers()
-        resp = await self._http.post(
-            f"{API_BASE}/im/v1/messages",
-            params={"receive_id_type": receive_id_type},
-            headers=headers,
-            json={
+        return await self._post_message(
+            {
                 "receive_id": receive_id,
                 "msg_type": "text",
                 "content": json.dumps({"text": text}),
             },
+            "chat_id" if is_chat else "open_id",
+            "send_text",
+            raise_on_error=False,
         )
-        data = resp.json()
-        if data.get("code") != 0:
-            logger.error("send_text failed: %s", data)
-            # Retry with refreshed token
-            if data.get("code") == 99991663:
-                await self._refresh_token()
-                return await self.send_text(receive_id, text, is_chat=is_chat)
-        return data
 
     async def send_card(
         self, receive_id: str, card: dict, *, is_chat: bool = False
     ) -> dict:
         """Send an interactive card message."""
-        receive_id_type = "chat_id" if is_chat else "open_id"
-        headers = await self._api_headers()
-        resp = await self._http.post(
-            f"{API_BASE}/im/v1/messages",
-            params={"receive_id_type": receive_id_type},
-            headers=headers,
-            json={
+        return await self._post_message(
+            {
                 "receive_id": receive_id,
                 "msg_type": "interactive",
                 "content": json.dumps(card),
             },
+            "chat_id" if is_chat else "open_id",
+            "send_card",
+            raise_on_error=True,
         )
-        data = resp.json()
-        if data.get("code") != 0:
-            logger.error("send_card failed: %s", data)
-            # Retry with refreshed token (same as send_text)
-            if data.get("code") == 99991663:
-                await self._refresh_token()
-                return await self.send_card(receive_id, card, is_chat=is_chat)
-            # Raise on other errors so callers know the card wasn't delivered
-            raise RuntimeError(f"send_card failed: code={data.get('code')} msg={data.get('msg')}")
-        return data
 
     async def list_group_members(self, chat_id: str) -> set[str] | None:
         """拉取群成员 open_id 集合（分页）。失败返回 None（权限缺失/网络）。

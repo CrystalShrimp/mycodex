@@ -53,6 +53,7 @@ class WeComWsClient:
         self._task: asyncio.Task | None = None
         self._ping_task: asyncio.Task | None = None
         self._pending: dict[str, asyncio.Future[dict]] = {}
+        self._rid_locks: dict[str, asyncio.Lock] = {}
         self._seen_msgids: deque[str] = deque(maxlen=_DEDUP_WINDOW)
         self._connected_at = 0.0
         self._msg_count = 0
@@ -68,6 +69,15 @@ class WeComWsClient:
     def start(self) -> None:
         self._stopped = False
         self._task = asyncio.get_running_loop().create_task(self._run_forever())
+
+    async def force_reconnect(self) -> None:
+        """收到 disconnected_event 被新连接抢占时，主动关闭底层连接触发重连重订。"""
+        self._subscribed = False
+        if self._conn is not None:
+            try:
+                await self._conn.close()
+            except Exception:
+                pass
 
     async def stop(self) -> None:
         self._stopped = True
@@ -148,11 +158,24 @@ class WeComWsClient:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            # ping 失败让 recv 循环自然断开重连；这里只记录
-            logger.warning("WeCom ping loop error: %s", e)
+            logger.warning("WeCom ping loop error: %s, closing connection to reconnect", e)
+            if self._conn is not None:
+                try:
+                    await self._conn.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _log_callback_error(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("WeCom callback unhandled error: %s", exc, exc_info=exc)
 
     async def _recv_loop(self) -> None:
         assert self._conn is not None
+        loop = asyncio.get_running_loop()
         while True:
             raw = await self._conn.recv()
             if isinstance(raw, bytes):
@@ -187,10 +210,12 @@ class WeComWsClient:
 
             if cmd == "aibot_msg_callback":
                 if self._on_message:
-                    await self._on_message(body, req_id)
+                    t = loop.create_task(self._on_message(body, req_id))
+                    t.add_done_callback(self._log_callback_error)
             elif cmd == "aibot_event_callback":
                 if self._on_event:
-                    await self._on_event(body, req_id)
+                    t = loop.create_task(self._on_event(body, req_id))
+                    t.add_done_callback(self._log_callback_error)
             else:
                 logger.debug("WeCom unknown cmd %s", cmd)
 
@@ -203,21 +228,27 @@ class WeComWsClient:
 
         respond 系列命令必须复用消息回调带来的 req_id（协议要求），
         此时传 req_id 参数；其余命令自动生成。同一 req_id 的并发请求
-        会互相抢占 pending 槽位，调用方需串行 await。
+        自动串行化，避免互相覆盖 _pending[rid] 槽位导致超时重发。
         """
         if self._conn is None:
             raise ConnectionError("WeCom WS not connected")
         rid = req_id or uuid.uuid4().hex
-        fut: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
-        self._pending[rid] = fut
-        payload = json.dumps({"cmd": cmd, "headers": {"req_id": rid}, "body": body})
-        try:
-            await self._conn.send(payload)
-            return await asyncio.wait_for(fut, timeout)
-        except asyncio.TimeoutError:
-            raise
-        finally:
-            self._pending.pop(rid, None)
+        lock = self._rid_locks.setdefault(rid, asyncio.Lock())
+        async with lock:
+            if self._conn is None:
+                raise ConnectionError("WeCom WS not connected")
+            fut: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+            self._pending[rid] = fut
+            payload = json.dumps({"cmd": cmd, "headers": {"req_id": rid}, "body": body})
+            try:
+                await self._conn.send(payload)
+                return await asyncio.wait_for(fut, timeout)
+            except asyncio.TimeoutError:
+                raise
+            finally:
+                self._pending.pop(rid, None)
+                if not req_id:
+                    self._rid_locks.pop(rid, None)
 
 
 def create_wecom_ws(

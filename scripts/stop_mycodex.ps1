@@ -15,7 +15,12 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path.ToLower()
 
 $procs = Get-CimInstance Win32_Process | Where-Object {
     $_.Name -match 'python' -and
-    $_.ProcessId -ne $CallerPid -and (
+    $_.ProcessId -ne $CallerPid -and
+    # Never kill the interactive setup wizard: restart is triggered BY the wizard.
+    # (The wizard runs under .venv\Scripts\python.exe whose ExecutablePath also
+    #  contains the project root and would otherwise match.)
+    -not ($_.CommandLine -and $_.CommandLine -match 'setup_wizard\.py') -and
+    (
         ($_.CommandLine -and $_.CommandLine.ToLower().Contains($root)) -or
         ($_.ExecutablePath -and $_.ExecutablePath.ToLower().Contains($root))
     )

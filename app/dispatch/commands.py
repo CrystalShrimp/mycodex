@@ -57,9 +57,54 @@ def _workspace_selection_payload(session: Session | None = None) -> dict:
     return {"current": current, "projects": find_all_codex_projects()}
 
 
-async def _check_and_run_pending(target: UserTarget) -> bool:
+async def _prompt_next_setup_step(target: UserTarget, prefix_ack: str = "") -> bool:
+    """按顺序弹出下一个尚未配置的初始化步骤（每次只发一张卡片/编号列表）。
+
+    顺序：[1/3] Model -> [2/3] Effort -> [3/3] Mode
+    若全部已配置则返回 False。
+    """
+    preferences = preferences_manager.get(target.user_id)
+    models = discover_models()
+    reply = ReplyContext(target)
+
+    if preferences.model not in models:
+        await reply.view(
+            "model_selection",
+            approval_id=uuid.uuid4().hex[:12],
+            models=models,
+            current_model="",
+            step_title="[1/3] 选择模型 (Model)",
+            prefix_ack=prefix_ack,
+        )
+        return True
+
+    if preferences.level not in VALID_EFFORTS:
+        await reply.view(
+            "effort_selection",
+            approval_id=uuid.uuid4().hex[:12],
+            current_effort="",
+            step_title="[2/3] 选择推理强度 (Effort)",
+            prefix_ack=prefix_ack,
+        )
+        return True
+
+    if preferences.mode not in ("h", "m", "l"):
+        await reply.view(
+            "mode_selection",
+            approval_id=uuid.uuid4().hex[:12],
+            active_mode="",
+            step_title="[3/3] 选择执行模式 (Mode)",
+            prefix_ack=prefix_ack,
+        )
+        return True
+
+    return False
+
+
+async def _check_and_run_pending(target: UserTarget, prev_ack: str = "") -> bool:
     """Check if all initial setup items (Model, Effort, Mode) are complete.
-    If complete and pending_prompt exists, trigger _run_codex automatically.
+    If still missing items and a setup/reset session is active, pop up the next step.
+    If complete, send summary message and trigger _run_codex if needed.
     """
     preferences = preferences_manager.get(target.user_id)
     models = discover_models()
@@ -68,36 +113,27 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
     has_level = preferences.level in VALID_EFFORTS
     has_mode = preferences.mode in ("h", "m", "l")
 
-    if has_model and has_level and has_mode:
-        session = session_manager.get_user_session(skey_for(target))
-        if session:
-            preferences_manager.save_workspace_config(session.workspace, preferences)
+    session = session_manager.get_user_session(skey_for(target))
 
+    if not (has_model and has_level and has_mode):
         if session and session.pending_prompt.strip():
-            pending = session.pending_prompt.strip()
-            session.pending_prompt = ""
-            session_manager.save_session(session)
+            await _prompt_next_setup_step(target, prefix_ack=prev_ack)
+        return False
 
-            model_label = models.get(preferences.model, {}).get("label", preferences.model)
-            mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
-            mode_lbl = mode_labels.get(preferences.mode, preferences.mode)
+    if session:
+        preferences_manager.save_workspace_config(session.workspace, preferences)
 
-            reply = ReplyContext(target)
-            if pending == "__reset_only__":
-                msg_lines = [
-                    "🎉 初始配置已全部就绪！",
-                    "",
-                    "📋 当前运行设置：",
-                    f"• 模型 (Model)：`{model_label}`",
-                    f"• 推理强度 (Effort)：`{preferences.level}`",
-                    f"• 执行模式 (Mode)：`{mode_lbl}`",
-                    "",
-                    "💡 现在您可以直接发送消息开始对话。"
-                ]
-                await reply.text("\n".join(msg_lines))
-                return True
+    if session and session.pending_prompt.strip():
+        pending = session.pending_prompt.strip()
+        session.pending_prompt = ""
+        session_manager.save_session(session)
 
-            prompt_preview = pending if len(pending) <= 30 else pending[:27] + "..."
+        model_label = models.get(preferences.model, {}).get("label", preferences.model)
+        mode_labels = {"h": "🛡️ 严格模式 (h)", "m": "⚖️ 平衡模式 (m)", "l": "⚡ 全自动模式 (l)"}
+        mode_lbl = mode_labels.get(preferences.mode, preferences.mode)
+
+        reply = ReplyContext(target)
+        if pending == "__reset_only__":
             msg_lines = [
                 "🎉 初始配置已全部就绪！",
                 "",
@@ -106,11 +142,25 @@ async def _check_and_run_pending(target: UserTarget) -> bool:
                 f"• 推理强度 (Effort)：`{preferences.level}`",
                 f"• 执行模式 (Mode)：`{mode_lbl}`",
                 "",
-                f"正在全自动为您执行暂存的任务：`{prompt_preview}` ..."
+                "💡 现在您可以直接发送消息开始对话。"
             ]
             await reply.text("\n".join(msg_lines))
-            asyncio.get_running_loop().create_task(_run_codex(pending, target, session))
             return True
+
+        prompt_preview = pending if len(pending) <= 30 else pending[:27] + "..."
+        msg_lines = [
+            "🎉 初始配置已全部就绪！",
+            "",
+            "📋 当前运行设置：",
+            f"• 模型 (Model)：`{model_label}`",
+            f"• 推理强度 (Effort)：`{preferences.level}`",
+            f"• 执行模式 (Mode)：`{mode_lbl}`",
+            "",
+            f"正在全自动为您执行暂存的任务：`{prompt_preview}` ..."
+        ]
+        await reply.text("\n".join(msg_lines))
+        asyncio.get_running_loop().create_task(_run_codex(pending, target, session))
+        return True
     return False
 
 
@@ -124,29 +174,46 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
     reply = ReplyContext(target)
     channel = get_channel(target.platform)
     if not await channel.is_allowed(target):
-        mode = settings.get_allowed_mode()
-        if mode == "groups":
-            err_msg = (
-                f"🚫 **权限拦截提醒**\n"
-                f"• 您的用户 ID: `{open_id or '(空)'}`\n"
-                f"• 当前访问模式: `groups`（仅指定群成员可用）\n\n"
-                f"💡 **解决建议**：请先加入被授权的群聊；管理员可在 `.env` 的 "
-                f"`ALLOWED_GROUP_IDS` 中调整群列表。"
-            )
-        else:
-            is_wecom = (target.platform == "wecom")
-            key_name = "WECOM_ALLOWED_USERS" if is_wecom else "ALLOWED_USERS"
-            allowed_list = settings.get_allowed_users_for(target.platform)
-            platform_name = "企业微信" if is_wecom else "飞书"
-            err_msg = (
-                f"🚫 **权限拦截提醒**\n"
-                f"• 您的用户 ID: `{open_id or '(空)'}`\n"
-                f"• 当前允许的{platform_name}用户列表: `{', '.join(allowed_list) if allowed_list else '(空，未配置白名单)'}`\n\n"
-                f"💡 **解决建议**：请在 `.env` 中把您的用户 ID 加入 `{key_name}`；"
-                f"如需对所有{platform_name}用户开放，请把 `.env` 中的 `{key_name}` 设为空。"
-            )
-        await reply.text(err_msg)
-        return
+        # 个人用自动绑定：个人模式下应用可用范围=仅创建者（自动化已配置并校验），
+        # 首个私聊进来的用户即创建者本人——绑定后本条消息直接放行
+        auto_bound = False
+        if (
+            target.platform != "wecom"
+            and not target.is_group
+            and settings.feishu_allowlist_pending.strip() == "1"
+        ):
+            from app.feishu.personal_bind import bind_from_message
+
+            auto_bound = await bind_from_message(open_id)
+            if auto_bound:
+                logger.info("个人用白名单自动绑定生效，当前消息继续正常处理：%s", open_id)
+            else:
+                await reply.text("⏳ 个人用白名单初始化中：系统正在自动完成配置，请稍后重试。")
+                return
+        if not auto_bound:
+            mode = settings.get_allowed_mode()
+            if mode == "groups":
+                err_msg = (
+                    f"🚫 **权限拦截提醒**\n"
+                    f"• 您的用户 ID: `{open_id or '(空)'}`\n"
+                    f"• 当前访问模式: `groups`（仅指定群成员可用）\n\n"
+                    f"💡 **解决建议**：请先加入被授权的群聊；管理员可在 `.env` 的 "
+                    f"`ALLOWED_GROUP_IDS` 中调整群列表。"
+                )
+            else:
+                is_wecom = (target.platform == "wecom")
+                key_name = "WECOM_ALLOWED_USERS" if is_wecom else "ALLOWED_USERS"
+                allowed_list = settings.get_allowed_users_for(target.platform)
+                platform_name = "企业微信" if is_wecom else "飞书"
+                err_msg = (
+                    f"🚫 **权限拦截提醒**\n"
+                    f"• 您的用户 ID: `{open_id or '(空)'}`\n"
+                    f"• 当前允许的{platform_name}用户列表: `{', '.join(allowed_list) if allowed_list else '(空，未配置白名单)'}`\n\n"
+                    f"💡 **解决建议**：请在 `.env` 中把您的用户 ID 加入 `{key_name}`；"
+                    f"如需对所有{platform_name}用户开放，请把 `.env` 中的 `{key_name}` 设为空。"
+                )
+            await reply.text(err_msg)
+            return
 
     text = text.strip()
     text_lower = text.lower()
@@ -167,7 +234,7 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             await reply.text("没有正在运行的任务。")
         return
 
-    # --- /reset: reset all setup preferences and immediately pop up setup cards ---
+    # --- /reset: reset all setup preferences and start sequential setup ---
     if text_lower in ("/reset", "重置"):
         await codex_cli_loop.cancel_and_wait(skey)
         preferences_manager.clear(open_id)
@@ -178,27 +245,9 @@ async def handle_message(target: UserTarget, message_id: str, text: str) -> None
             session.pending_prompt = "__reset_only__"
             session_manager.save_session(session)
 
-        models = discover_models()
-        reset_views: list[tuple[str, dict]] = [
-            ("model_selection", {
-                "approval_id": uuid.uuid4().hex[:12],
-                "models": models,
-                "current_model": "",
-            }),
-            ("effort_selection", {
-                "approval_id": uuid.uuid4().hex[:12],
-                "current_effort": "",
-            }),
-            ("mode_selection", {
-                "approval_id": uuid.uuid4().hex[:12],
-                "active_mode": "",
-            }),
-        ]
-        for kind, payload in reset_views:
-            await reply.view(kind, **payload)
-
-        await reply.text(
-            "🔄 已重置初始运行配置，请直接在上方卡片中重新点选（Model / Effort / Mode）：",
+        await _prompt_next_setup_step(
+            target,
+            prefix_ack="🔄 已重置初始运行配置，请按顺序完成 3 项设置（选完一项自动进入下一项）：",
         )
         return
 
@@ -769,32 +818,10 @@ async def _run_codex(
         if need_model or need_effort or need_mode:
             session.pending_prompt = prompt
             session_manager.save_session(session)
-
-            missing_views: list[tuple[str, dict]] = []
-            if need_model:
-                missing_views.append(("model_selection", {
-                    "approval_id": uuid.uuid4().hex[:12],
-                    "models": models,
-                    "current_model": "",
-                }))
-            if need_effort:
-                missing_views.append(("effort_selection", {
-                    "approval_id": uuid.uuid4().hex[:12],
-                    "current_effort": "",
-                }))
-            if need_mode:
-                missing_views.append(("mode_selection", {
-                    "approval_id": uuid.uuid4().hex[:12],
-                    "active_mode": "",
-                }))
-
-            for kind, payload in missing_views:
-                await reply.view(kind, **payload)
-
             prompt_preview = prompt if len(prompt) <= 30 else prompt[:27] + "..."
-            await reply.text(
-                f"💡 任务已安全暂存：`{prompt_preview}`\n"
-                f"系统检测到有 {len(missing_views)} 项初始配置尚未设置。请直接在上方卡片中点选完成，全部设置就绪后系统将全自动重新开始为您执行任务！",
+            await _prompt_next_setup_step(
+                target,
+                prefix_ack=f"💡 任务已安全暂存：`{prompt_preview}`\n请按顺序完成初始配置，全部就绪后将自动为您执行任务：",
             )
             return
 

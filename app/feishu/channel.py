@@ -195,6 +195,8 @@ class FeishuChannel:
             )
         else:
             raise ValueError(f"Unknown view kind: {kind}")
+        if payload.get("step_title") and isinstance(card.get("header"), dict):
+            card["header"].setdefault("title", {"tag": "plain_text", "content": ""})["content"] = payload["step_title"]
         await self.send_card(target, card)
 
     # ---- 白名单（groups 模式需查飞书群成员，其余模式纯配置判定）----
@@ -204,6 +206,9 @@ class FeishuChannel:
         mode = settings.get_allowed_mode()
         if mode == "org":
             return True
+        # 个人用白名单自动绑定进行中：先统一拒绝，绑定完成即放行（避免空名单误放行）
+        if settings.feishu_allowlist_pending.strip() == "1":
+            return False
         if mode == "creator":
             return bool(settings.allowed_creator.strip()) and open_id == settings.allowed_creator.strip()
         # list / 默认模式：飞书白名单为空 = 飞书全员开放；非空时仅名单内 open_id 可用

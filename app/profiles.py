@@ -20,6 +20,11 @@ CONFIG_DIR = MYCODEX_ROOT / "config"
 # Fallback when models_cache.json is missing/unreadable. Keep in sync with
 # what the ChatGPT-login codex offers (visibility=list in models cache).
 _FALLBACK_MODELS: dict[str, dict] = {
+    "gpt-6-luna": {
+        "name": "gpt-6-luna",
+        "label": "GPT-6-Luna (新一代)",
+        "description": "新一代快速模型，简单任务性价比之选",
+    },
     "gpt-5.6-terra": {
         "name": "gpt-5.6-terra",
         "label": "GPT-5.6-Terra (旗舰)",

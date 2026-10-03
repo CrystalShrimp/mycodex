@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -118,6 +119,13 @@ async def lifespan(app: FastAPI):
                 )
         except Exception as e:
             logger.warning("Failed to fetch bot open_id: %s", e)
+
+    # 个人用白名单自动绑定：向导解析创建者失败置 FEISHU_ALLOWLIST_PENDING=1，
+    # 后台等飞书 self_manage 权限生效后自动解析创建者、写白名单并主动通知
+    if "feishu" in enabled and settings.feishu_allowlist_pending.strip() == "1":
+        from app.feishu import personal_bind
+
+        asyncio.create_task(personal_bind.bind_loop())
 
     # Start WeCom smart-bot WebSocket long-connection
     if "wecom" in enabled:

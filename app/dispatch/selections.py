@@ -186,10 +186,12 @@ def handle_mode_switch(target: UserTarget, mode: str) -> str:
     preferences.mode = mode
     preferences_manager.save(target.user_id, preferences)
 
-    asyncio.get_running_loop().create_task(_check_and_run_pending(target))
-
     mode_labels = {"h": "严格模式 (h)", "m": "平衡模式 (m)", "l": "全自动模式 (l)"}
-    return f"已设置执行模式: {mode_labels.get(mode, mode)}"
+    lbl = mode_labels.get(mode, mode)
+    asyncio.get_running_loop().create_task(
+        _check_and_run_pending(target, prev_ack=f"✅ 已选择执行模式：`{lbl}`")
+    )
+    return f"已设置执行模式: {lbl}"
 
 
 def handle_effort_switch(target: UserTarget, effort: str) -> str:
@@ -199,7 +201,9 @@ def handle_effort_switch(target: UserTarget, effort: str) -> str:
     preferences.level = effort
     preferences_manager.save(target.user_id, preferences)
     codex_cli_loop.cancel_by_user(skey_for(target))
-    asyncio.get_running_loop().create_task(_check_and_run_pending(target))
+    asyncio.get_running_loop().create_task(
+        _check_and_run_pending(target, prev_ack=f"✅ 已选择推理强度：`{effort}`")
+    )
     return f"已切换推理强度: {effort}"
 
 
@@ -213,7 +217,9 @@ def handle_model_switch(target: UserTarget, skey: str, model: str) -> str:
     preferences.model = model
     preferences_manager.save(target.user_id, preferences)
     codex_cli_loop.cancel_by_user(skey)
-    asyncio.get_running_loop().create_task(_check_and_run_pending(target))
+    asyncio.get_running_loop().create_task(
+        _check_and_run_pending(target, prev_ack=f"✅ 已选择模型：`{label}`")
+    )
     return f"模型已切换为 {label}"
 
 

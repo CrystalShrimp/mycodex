@@ -114,6 +114,11 @@ async def _run_selection(
     value: str,
 ) -> str | None:
     """执行一种编号选择，返回 ack 文案（None = 已发后续消息，无需 ack）。"""
+    from app.dispatch.sessions import session_manager
+
+    session = session_manager.get_user_session(skey)
+    in_wizard = bool(session and session.pending_prompt.strip())
+
     if kind == "workspace_selection":
         selections.handle_workspace_pre(target, skey, "pre_switch", value)
         return None
@@ -124,7 +129,20 @@ async def _run_selection(
             selections.handle_workspace_cancel(target)
         return None
     if kind == "model_selection":
-        return selections.handle_model_switch(target, skey, value)
+        msg = selections.handle_model_switch(target, skey, value)
+        return None if in_wizard else msg
+    if kind == "effort_selection":
+        msg = selections.handle_effort_switch(target, value)
+        return None if in_wizard else msg
+    if kind == "mode_selection":
+        msg = selections.handle_mode_switch(target, value)
+        return None if in_wizard else msg
+    if kind == "reuse_last":
+        msg = selections.handle_reuse_confirm(target, skey, value == "yes")
+        return None if value == "yes" else msg
+    if kind == "ws_config_reuse":
+        msg = selections.handle_ws_config_reuse(target, skey, value == "yes")
+        return None if value == "yes" else msg
     if kind == "session_selection":
         return selections.handle_session_resume(target, skey, value)
     if kind == "file_selection":
@@ -139,7 +157,9 @@ async def on_wecom_event(body: dict, req_id: str) -> None:
     etype = event.get("eventtype", "")
 
     if etype == "disconnected_event":
-        logger.warning("WeCom old connection kicked by new subscribe (expected if re-subscribed)")
+        logger.warning("WeCom old connection kicked by new subscribe, reconnecting immediately...")
+        if _CHANNEL._ws is not None:
+            await _CHANNEL._ws.force_reconnect()
         return
 
     if etype == "enter_chat":
@@ -163,9 +183,15 @@ async def on_wecom_event(body: dict, req_id: str) -> None:
 async def _handle_card_event(body: dict, req_id: str) -> None:
     assert _CHANNEL is not None
     event = body.get("event") or {}
-    # 按钮事件载荷字段名以真机回调为准（文档指向"接收事件"页），
-    # 兼容 event_key / eventkey 两种写法
-    raw_key = str(event.get("event_key") or event.get("eventkey") or "")
+    tce = event.get("template_card_event") or {}
+    # 企微智能机器人 template_card_event 按钮 key 位于 event.template_card_event.event_key
+    raw_key = str(
+        tce.get("event_key")
+        or tce.get("eventkey")
+        or event.get("event_key")
+        or event.get("eventkey")
+        or ""
+    )
     userid = ((body.get("from") or {}).get("userid")) or ""
     chatid = body.get("chatid") or ""
     chattype = body.get("chattype") or "single"
@@ -177,15 +203,34 @@ async def _handle_card_event(body: dict, req_id: str) -> None:
         chat_id=chatid if is_group else "",
         is_group=is_group,
     )
-    _CHANNEL.note_req_id(chat_key_of(target), req_id)
+    # 注意：不要用卡片事件的 req_id 覆盖 _CHANNEL.note_req_id，
+    # 因为事件回调 req_id 仅用于 aibot_respond_update_msg，不可用于 aibot_respond_msg。
     logger.info("WeCom card event: user=%s key=%r", userid, raw_key[:80])
 
     ack = _parse_and_dispatch(target, raw_key)
     if ack:
-        try:
-            await _CHANNEL.send_text(target, ack)
-        except Exception as e:
-            logger.warning("WeCom card ack failed: %s", e)
+        updated = False
+        if req_id and _CHANNEL._client is not None:
+            try:
+                resp = await _CHANNEL._client.respond_update_card(
+                    req_id,
+                    {
+                        "card_type": "text_notice",
+                        "source": {"desc": "MyCodex"},
+                        "main_title": {"title": ack},
+                    },
+                )
+                if resp.get("errcode", -1) == 0:
+                    updated = True
+                else:
+                    logger.warning("WeCom respond_update_card errcode=%s: %s", resp.get("errcode"), resp.get("errmsg"))
+            except Exception as e:
+                logger.warning("WeCom respond_update_card failed: %s", e)
+        if not updated:
+            try:
+                await _CHANNEL.send_text(target, ack)
+            except Exception as e:
+                logger.warning("WeCom card ack failed: %s", e)
 
 
 def _parse_and_dispatch(target: UserTarget, raw_key: str) -> str | None:

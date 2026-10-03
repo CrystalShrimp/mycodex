@@ -5,7 +5,8 @@
 2. 自动获取 tenant_access_token；
 3. 智能发现机器人所在的群聊列表，支持序号快捷选择或手动输入群 chat_id (oc_xxx)；
 4. 分页拉取该群内全部成员的 open_id (ou_xxx)；
-5. 自动保留现有的企业微信白名单，将群成员一键写入 .env 的 ALLOWED_USERS。
+5. 自动保留现有的企业微信白名单，将群成员一键写入 .env 的 ALLOWED_USERS；
+6. 记录各群导入成员快照，支持对已导入群聊同步成员变动（新成员加入白名单、退群成员移出）。
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / ".env"
+SNAPSHOT_PATH = ROOT / "config" / "feishu_group_imports.json"
 OPEN_API_BASE = "https://open.feishu.cn/open-apis"
 
 
@@ -67,6 +69,37 @@ def _http_request(url: str, method: str = "GET", headers: dict | None = None, da
             return {"code": e.code, "msg": f"HTTP {e.code}: {e.reason}"}
     except Exception as e:
         return {"code": -1, "msg": str(e)}
+
+
+def load_snapshots() -> dict[str, list[str]]:
+    """读取各群最近一次导入的成员快照 {chat_id: [open_id, ...]}。"""
+    try:
+        data = json.loads(SNAPSHOT_PATH.read_text("utf-8"))
+        return {str(k): [str(x) for x in v] for k, v in data.items() if isinstance(v, list)}
+    except Exception:
+        return {}
+
+
+def save_snapshots(snapshots: dict[str, list[str]]) -> None:
+    try:
+        SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SNAPSHOT_PATH.write_text(json.dumps(snapshots, ensure_ascii=False, indent=2), "utf-8")
+    except Exception as e:
+        print(f"⚠️ 群成员快照写入失败（不影响白名单写入）: {e}")
+
+
+def compute_sync_changes(allowed_feishu: list[str], snapshot: list[str], members: list[str]) -> tuple[list[str], list[str]]:
+    """计算群成员同步所需的白名单增删，返回 (需新增, 需移除)。
+
+    新增 = 当前群成员里还不在白名单中的（含新入群与曾被清空的）；
+    移除 = 上次导入快照中已退群、且当前仍在白名单里的。
+    手工添加的非本群 ID 不受影响。
+    """
+    allowed_set = set(allowed_feishu)
+    member_set = set(members)
+    to_add = [m for m in members if m not in allowed_set]
+    to_remove = [u for u in snapshot if u not in member_set and u in allowed_set]
+    return to_add, to_remove
 
 
 def get_tenant_access_token(app_id: str, app_secret: str) -> str:
@@ -163,19 +196,29 @@ def main() -> int:
         upsert_env("WECOM_ALLOWED_USERS", ",".join(wecom_list))
         print(f"ℹ️ 检测到历史残留的企微白名单，已自动平滑迁移至 WECOM_ALLOWED_USERS ({len(wecom_list)} 人)")
 
-    # 选择操作分支：重置群成员名单 vs 添加新的群成员名单
+    # 选择操作分支：重置 / 追加 / 同步已有群的成员变动
+    snapshots = load_snapshots()
     print(f"当前已配置飞书白名单人数: {len(feishu_users)} 人")
     print("请选择操作模式：")
     print("  [1] 重置群成员名单（清空旧名单，仅保留本次所选群成员）")
     print("  [2] 添加新的群成员名单（在现有白名单基础上，追加合并新群成员）")
+    print("  [3] 同步已导入群聊的成员变动（新入群成员加入白名单，退群成员移出）")
     print("  [0] 取消并返回")
-    mode_choice = input("请选择 [1/2/0] (直接回车默认 1): ").strip()
+    mode_choice = input("请选择 [1/2/3/0] (直接回车默认 1): ").strip()
     if mode_choice == "0":
         print("已取消操作。")
         return 0
     is_append_mode = mode_choice == "2"
-    mode_desc = "添加新的群成员名单（追加合并）" if is_append_mode else "重置群成员名单（覆盖原有）"
-    print(f"→ 已选定模式：{mode_desc}\n")
+    is_sync_mode = mode_choice == "3"
+    mode_desc = (
+        "同步已导入群聊的成员变动"
+        if is_sync_mode
+        else "添加新的群成员名单（追加合并）" if is_append_mode else "重置群成员名单（覆盖原有）"
+    )
+    print(f"→ 已选定模式：{mode_desc}")
+    if is_sync_mode and not snapshots:
+        print("ℹ️ 尚无已导入群聊的记录，本次同步等同首次导入（该群全部成员加入白名单）。")
+    print()
 
     target_chat_id = ""
     if len(sys.argv) > 1 and sys.argv[1].strip():
@@ -191,7 +234,8 @@ def main() -> int:
                 cid = c.get("chat_id", "")
                 desc = c.get("description") or ""
                 extra = f" - {desc}" if desc else ""
-                print(f"  [{idx}] {name} (ID: {cid}){extra}")
+                mark = " ★已导入" if cid in snapshots else ""
+                print(f"  [{idx}] {name} (ID: {cid}){extra}{mark}")
             print()
             choice = input(f"请选择群聊序号 [1-{len(chats)}] 或直接粘贴其他群聊的 chat_id (直接回车取消): ").strip()
             if not choice:
@@ -226,6 +270,8 @@ def main() -> int:
     print(f"   预览前 {preview_count} 名: {', '.join(members[:preview_count])}{'...' if len(members) > preview_count else ''}")
 
     final_members: list[str] = []
+    sync_added: list[str] = []
+    sync_removed: list[str] = []
     if is_append_mode:
         for u in feishu_users:
             if u not in final_members:
@@ -233,13 +279,35 @@ def main() -> int:
         for m in members:
             if m not in final_members:
                 final_members.append(m)
+    elif is_sync_mode:
+        snapshot = snapshots.get(target_chat_id, [])
+        sync_added, sync_removed = compute_sync_changes(feishu_users, snapshot, members)
+        removed_set = set(sync_removed)
+        final_members = [u for u in feishu_users if u not in removed_set]
+        for m in sync_added:
+            if m not in final_members:
+                final_members.append(m)
     else:
         final_members = list(members)
 
+    # 记录该群本次成员快照，供后续 [3] 同步比对增删
+    snapshots[target_chat_id] = list(members)
+    save_snapshots(snapshots)
     upsert_env("ALLOWED_USERS", ",".join(final_members))
 
     print("\n" + "=" * 60)
-    if is_append_mode:
+    if is_sync_mode:
+        if not sync_added and not sync_removed:
+            print(f"✅ 群成员与白名单已一致（共 {len(members)} 人），无需变动。")
+        else:
+            print(f"🎉 同步完成：新增 {len(sync_added)} 人，移出 {len(sync_removed)} 人。当前飞书白名单共 {len(final_members)} 人。")
+            if sync_added:
+                shown = sync_added[:10]
+                print(f"   新增: {', '.join(shown)}{' ...' if len(sync_added) > 10 else ''}")
+            if sync_removed:
+                shown = sync_removed[:10]
+                print(f"   移出: {', '.join(shown)}{' ...' if len(sync_removed) > 10 else ''}")
+    elif is_append_mode:
         print(f"🎉 已追加新群成员！当前飞书白名单共 {len(final_members)} 人已写入 .env 的 ALLOWED_USERS。")
     else:
         print(f"🎉 已重置群成员名单！共 {len(final_members)} 名群成员已写入 .env 的 ALLOWED_USERS。")

@@ -2,7 +2,7 @@
     "appName":  "mycodex",
     "appDescription":  "用于接入 mycodex 的飞书机器人",
     "appIconPath":  "./icon.png",
-    "botName":  "mycodex 助手",
+    "botName":  "mycodex",
     "reuseStartedApp":  false,
     "permissionsImportJsonPath":  "./feishu-permissions.json",
     "enableGroupMessagePermission":  true,

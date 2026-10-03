@@ -23,6 +23,7 @@ config/shortcuts.json
 config/claude_settings.json
 config/active_profile
 config/global_preferences.json
+config/feishu_group_imports.json
 
 # Logs & runtime output
 *.log
@@ -75,4 +76,8 @@ auto_wecom/artifacts/
 auto_wecom/node_modules/
 auto_wecom/dist/
 auto_wecom/*.log
+
+# 默认初始工作目录（保留 .gitkeep，忽略客户任意测试产生的临时文件）
+workspace/*
+!workspace/.gitkeep
 

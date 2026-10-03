@@ -1,5 +1,5 @@
 {
-    "botName": "Mycodex 助手",
+    "botName": "mycodex",
     "botDescription": "用于接入 mycodex 的企业微信智能机器人",
     "envPath": "../.env",
     "resultPath": "./wecom-bot-result.json",

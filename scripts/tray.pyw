@@ -222,8 +222,10 @@ def start_server() -> None:
     env = os.environ.copy()
     venv_scripts = str((ROOT / ".venv" / "Scripts").resolve())
     env["PATH"] = venv_scripts + os.pathsep + env.get("PATH", "")
-    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
-        env.pop(name, None)
+    # 代理变量原样透传：codex 子进程需要代理访问 OpenAI；飞书流量由
+    # NO_PROXY（bat 已设置 feishu 域名）绕开代理，互不影响。
+    # （历史：这里曾删除全部代理变量"保护飞书"，导致 codex 直连超时、
+    # 任务偶发停滞。）
     python = ROOT / ".venv" / "Scripts" / "python.exe"
     try:
         job_handle = kernel32.CreateJobObjectW(None, None)

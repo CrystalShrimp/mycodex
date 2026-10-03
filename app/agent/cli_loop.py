@@ -321,6 +321,14 @@ class CodexCLILoop:
         env = os.environ.copy()
         for key in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
             env.pop(key, None)
+        # 显式代理配置只作用于 codex 子进程：服务环境常被剥离代理变量
+        # （老版托盘行为），而 codex 访问 OpenAI 多数地区必须走代理。
+        proxy = settings.codex_proxy.strip()
+        if proxy:
+            env["HTTP_PROXY"] = proxy
+            env["HTTPS_PROXY"] = proxy
+            env["http_proxy"] = proxy
+            env["https_proxy"] = proxy
 
         proc = await asyncio.create_subprocess_exec(
             *args,

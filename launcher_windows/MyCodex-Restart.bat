@@ -26,7 +26,7 @@ set /a TRIES=0
 
 :WAIT_LOOP
 set /a TRIES+=1
-curl.exe -s -m 2 http://127.0.0.1:8090/health 2>nul | find "ok" >nul
+curl.exe -s --noproxy "*" -m 2 http://127.0.0.1:8090/health 2>nul | find "ok" >nul
 if not errorlevel 1 goto ONLINE
 if %TRIES% geq 60 goto OFFLINE
 ping -n 2 127.0.0.1 >nul

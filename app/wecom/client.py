@@ -47,6 +47,12 @@ class WeComClient:
             "template_card": template_card,
         }, req_id=req_id)
 
+    async def respond_update_card(self, req_id: str, template_card: dict) -> dict:
+        return await self._ws.request("aibot_respond_update_msg", {
+            "response_type": "update_template_card",
+            "template_card": template_card,
+        }, req_id=req_id)
+
     async def respond_file(self, req_id: str, media_id: str) -> dict:
         return await self._ws.request("aibot_respond_msg", {
             "msgtype": "file",

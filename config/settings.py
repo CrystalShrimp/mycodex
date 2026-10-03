@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     # Codex CLI
     codex_cli_path: str = "codex"
     codex_default_model: str = ""
+    # codex 子进程的代理（如 http://127.0.0.1:7897）。留空 = 继承服务
+    # 进程环境。OpenAI 在多数地区需代理可达；飞书流量不受影响（NO_PROXY）。
+    codex_proxy: str = ""
 
     # Workspace（Codex 默认代码工程目录；未配置时跨平台智能回退）
     default_workspace: str = ""
@@ -37,9 +40,13 @@ class Settings(BaseSettings):
     allowed_users: str = ""
     # 企业微信访问白名单（留空 = 全员放行，非空 = 仅名单内 userid 可用，无须 wecom: 前缀）
     wecom_allowed_users: str = ""
+    # 企业微信特定群白名单（方案 A：授权群 chatid 列表，群内成员直接可用并自动收录单聊权限）
+    wecom_allowed_chats: str = ""
     allowed_mode: str = ""
     allowed_creator: str = ""
     allowed_group_ids: str = ""
+    # 个人用白名单自动绑定标记（向导解析创建者失败置 1；服务后台轮询成功后自动清除）
+    feishu_allowlist_pending: str = ""
 
     # Audit
     audit_log_path: str = "./logs/audit.log"
@@ -53,7 +60,7 @@ class Settings(BaseSettings):
     port: int = 8090
     # 单实例锁端口 — 与同机其他 MyCodex 系部署（如 mycodex 原项目）必须不同，
     # 否则两个服务互相误判"已在运行"而拒绝启动。
-    instance_lock_port: int = 48921
+    instance_lock_port: int = 48922
 
     # 通道选择：空 = 自动探测（有 FEISHU_APP_ID 启飞书、有 WECOM_BOT_ID
     # 启企微）；显式逗号列表 = 只启列出的（feishu,wecom）
@@ -108,6 +115,42 @@ class Settings(BaseSettings):
                     compat.append(uid)
         return compat
 
+    def get_wecom_allowed_chats(self) -> list[str]:
+        """获取企业微信授权群聊 chatid 列表（方案 A 特定群白名单）。"""
+        return [c.strip() for c in self.wecom_allowed_chats.split(",") if c.strip()]
+
+    def record_wecom_allowed_user(self, user_id: str) -> bool:
+        """将授权群内发言的企微成员自动收录进 WECOM_ALLOWED_USERS（内存 + .env 持久化）。"""
+        uid = user_id.strip()
+        if not uid:
+            return False
+        current = self.get_wecom_allowed_users()
+        if uid in current:
+            return False
+        current.append(uid)
+        new_val = ",".join(current)
+        self.wecom_allowed_users = new_val
+        try:
+            env_file = Path(__file__).resolve().parent.parent / ".env"
+            lines = env_file.read_text(encoding="utf-8", errors="replace").splitlines() if env_file.exists() else []
+            found = False
+            new_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped.startswith("#") and "=" in stripped:
+                    k, _ = stripped.split("=", 1)
+                    if k.strip() == "WECOM_ALLOWED_USERS":
+                        new_lines.append(f"WECOM_ALLOWED_USERS={new_val}")
+                        found = True
+                        continue
+                new_lines.append(line)
+            if not found:
+                new_lines.append(f"WECOM_ALLOWED_USERS={new_val}")
+            env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        except Exception:
+            pass
+        return True
+
     def get_allowed_users_for(self, platform: str) -> list[str]:
         """按平台获取对应的独立白名单列表。"""
         if platform == "wecom":
@@ -129,7 +172,7 @@ class Settings(BaseSettings):
         return self.codex_session_dir.strip()
 
     def get_default_workspace(self) -> str:
-        """返回已配置的工作空间路径，若未设置或不存在则默认回退到当前项目所在目录。"""
+        """返回已配置的工作空间路径，若未设置或不存在则默认回退到 workspace 独立沙盒目录。"""
         configured = self.default_workspace.strip()
         if configured:
             path = Path(configured).expanduser()
@@ -141,7 +184,12 @@ class Settings(BaseSettings):
                     return str(path.resolve())
 
         root_dir = Path(__file__).resolve().parent.parent
-        return str(root_dir)
+        default_dir = root_dir / "workspace"
+        try:
+            default_dir.mkdir(parents=True, exist_ok=True)
+            return str(default_dir.resolve())
+        except Exception:
+            return str(root_dir)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
