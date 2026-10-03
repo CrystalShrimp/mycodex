@@ -131,6 +131,24 @@ def upsert_env_key(key: str, value: str):
         print(f"[!] 写入 .env 失败: {e}")
 
 
+def cross_platform_path(path_text: str) -> bool:
+    """检测其他平台残留路径：win 盘符/UNC 出现在 mac/linux，或 posix 绝对路径出现在 win。
+
+    （2026-10-03 事故：mac 的 .env 里 DEFAULT_WORKSPACE=D:\\projects\\demo——
+    照抄了 doc/setup.md 的示例值——向导原样推荐并在 mac 上建出该名字的目录。）
+    """
+    s = path_text.strip()
+    if not s:
+        return False
+    if sys.platform != "win32":
+        if (len(s) >= 2 and s[1] == ":") or s.startswith("\\\\") or s.startswith("//"):
+            return True
+    else:
+        if s.startswith("/"):
+            return True
+    return False
+
+
 def get_recommended_workspace() -> Path:
     """获取默认初始运行目录：默认为项目根目录下的 workspace 独立沙盒目录。"""
     ws = ROOT_DIR / "workspace"
@@ -191,6 +209,9 @@ def confirm_directories():
                 if not custom:
                     print("[!] 路径不能为空，请重新输入。")
                     continue
+                if cross_platform_path(custom):
+                    print("[!] 这是其他平台的路径格式，请输入本机路径。")
+                    continue
                 try:
                     final = Path(custom).expanduser().resolve()
                     break
@@ -201,6 +222,9 @@ def confirm_directories():
 
     # 1. 初始运行目录：初始任务临时在此运行，后续可用/cd 命令切换至目标目录
     configured = get_env_value("DEFAULT_WORKSPACE")
+    if configured and cross_platform_path(configured):
+        print(f"[!] .env 中的 DEFAULT_WORKSPACE（{configured}）是其他平台的路径，已忽略并改用本机推荐值。")
+        configured = ""
     rec_ws = Path(configured).expanduser() if configured else get_recommended_workspace()
     final_ws = ask_path(
         "[1] 初始运行目录：初始任务临时在此运行，后续可用/cd 命令切换至目标目录",
@@ -215,6 +239,9 @@ def confirm_directories():
 
     # 2. Codex 历史会话目录：读取电脑端的历史会话
     sess_configured = get_env_value("CODEX_SESSION_DIR")
+    if sess_configured and cross_platform_path(sess_configured):
+        print(f"[!] .env 中的 CODEX_SESSION_DIR（{sess_configured}）是其他平台的路径，已忽略并改用本机推荐值。")
+        sess_configured = ""
     rec_sess = Path(sess_configured).expanduser() if sess_configured else infer_codex_session_dir()
     final_sess = ask_path(
         "[2] Codex 历史会话目录：读取电脑端的历史会话",
