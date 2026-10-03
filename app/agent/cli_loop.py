@@ -35,6 +35,7 @@ from app.channel.registry import get_channel
 from app.models.schemas import AgentResult, ToolCallRecord
 from app.audit.logger import audit_logger
 from app.agent.codex_sessions import latest_thread_for_workspace
+from app.agent.auto_compact import PROMPT_TOO_LONG, TOO_LONG_GUIDANCE, find_transcript, summarize_tail
 from app.dispatch.sessions import skey_for
 
 logger = logging.getLogger("mycodex.cli_loop")
@@ -145,6 +146,58 @@ class CodexCLILoop:
         return None
 
     async def send_and_wait(
+        self,
+        prompt: str,
+        target: UserTarget,
+        workspace: str,
+        model: str | None = None,
+        approval_mode: str = "m",
+        effort: str = "",
+        codex_thread_id: str | None = None,
+        resume_thread_id: str | None = None,
+    ) -> AgentResult:
+        """公共入口：超窗终态自动压缩并在新线程重放（详见 app/agent/auto_compact.py）。
+
+        仅对 resume/continue 的执行生效，且只重试一层（重放传线程 id=None）。
+        """
+        result = await self._send_and_wait_once(
+            prompt, target, workspace, model, approval_mode, effort,
+            codex_thread_id, resume_thread_id,
+        )
+        if (codex_thread_id or resume_thread_id) and PROMPT_TOO_LONG.search(result.text or ""):
+            old_id = codex_thread_id or resume_thread_id or ""
+            logger.warning("会话 %s… 上下文超窗，尝试自动压缩续接", old_id[:8])
+            summary = None
+            transcript = find_transcript(old_id)
+            if transcript is not None:
+                summary = await summarize_tail(
+                    transcript,
+                    cli_path=settings.codex_cli_path,
+                    model=model or "",
+                    workspace=workspace,
+                )
+            if summary:
+                logger.info("自动压缩完成（摘要 %d 字符），新线程重放用户请求", len(summary))
+                retry_prompt = (
+                    "【背景摘要（自动压缩自上一会话；原会话超出模型上下文窗口）】\n"
+                    f"{summary}\n\n【用户最新请求】\n{prompt}\n\n"
+                    "请基于以上背景继续执行用户请求。"
+                )
+                result2 = await self._send_and_wait_once(
+                    retry_prompt, target, workspace, model, approval_mode, effort,
+                    None, None,
+                )
+                sid8 = (result2.session_id or "")[:8]
+                result2.text = (
+                    f"⚠️ 原会话超出模型上下文窗口，已自动压缩为摘要并在新会话继续"
+                    f"（新会话 {sid8}）。\n\n" + (result2.text or "")
+                )
+                return result2
+            logger.warning("自动压缩未成功，返回指引文本")
+            result.text = (result.text or "") + TOO_LONG_GUIDANCE
+        return result
+
+    async def _send_and_wait_once(
         self,
         prompt: str,
         target: UserTarget,
