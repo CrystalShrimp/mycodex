@@ -294,6 +294,7 @@ async function listExistingBots(page: Page, config: LoadedConfig): Promise<strin
 async function openBotDetail(page: Page, config: LoadedConfig, botName: string): Promise<void> {
   await page.goto(LIST_MANAGE_URL, { waitUntil: "domcontentloaded", timeout: config.timeoutMs });
   await page.waitForTimeout(5000);
+  await dismissFirstUseConsent(page);
   const locator = page.getByText(new RegExp(`^${escapeRegExp(botName)}$`)).first();
   if (!(await locator.isVisible({ timeout: 5000 }).catch(() => false))) {
     throw new Error(`机器人管理列表中未找到「${botName}」。`);
@@ -380,6 +381,42 @@ async function harvestVisibleNotices(page: Page): Promise<string> {
     .catch(() => "");
 }
 
+async function dismissFirstUseConsent(page: Page): Promise<void> {
+  // 首次进入智能机器人控制台可能出现多类"首用遮罩"，不关掉时后续点击都落在
+  // 遮罩上——表单不渲染/保存不提交/列表恒为空：
+  // ① 中文「使用规则与隐私协议」同意层（按钮「好的」）——2026-10-12 客户复现
+  //    （保存后 aibot_list 恒空、无创建类接口请求）。
+  // ② 国际版 Cookie 同意横幅（Accept all optional cookies）——2026-10-12 本机
+  //    全新浏览器配置复现（创建表单完全不渲染）。点"接受"保留功能型 Cookie
+  //    （含"记录已读提示"），避免同类提示反复弹出。
+  // 原则：只点纯关闭/接受 Cookie 类按钮，绝不自动点「同意」等有实质含义的按钮。
+  // Cookie 横幅是"单选表单+保存按钮"结构（非一键接受）：需选 Accept all 单选
+  // 再点 Save and close 才会真正关闭并写入同意 Cookie。只点文本仅选中单选、
+  // 不保存，横幅持续拦截整页点击（2026-10-12 Run C/D 实测解剖 DOM 确认）。
+  const cookieSave = page.locator("#js_layoutCookiesBanner_saveBtn");
+  if (await cookieSave.isVisible({ timeout: 1500 }).catch(() => false)) {
+    await page.locator("#js_cookieBannerType_All").click({ timeout: 3000 }).catch(() => undefined);
+    await page.waitForTimeout(300);
+    await cookieSave.click({ timeout: 3000 }).catch(() => undefined);
+    await page.waitForTimeout(800);
+    // 校验横幅确实关闭：仍在则响亮告警（否则后续所有点击都会被它拦截）
+    const stillUp = await page.locator(".layoutCookiesBanner_wrap:visible").first().isVisible({ timeout: 500 }).catch(() => false);
+    if (stillUp) {
+      logger.warn("Cookie 横幅在接受后仍未关闭——后续点击可能被拦截，若失败请截图后台状态。");
+    } else {
+      logger.info("已接受 Cookie 通知（Accept all + Save，关闭首用遮罩）。");
+    }
+  }
+  const btn = page.locator(
+    "button:has-text('好的'), a:has-text('好的'), button:has-text('我知道了'), a:has-text('我知道了')"
+  ).first();
+  if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+    await btn.click({ timeout: 3000 }).catch(() => undefined);
+    await page.waitForTimeout(800);
+    logger.info("已自动关闭控制台首次使用同意弹窗（使用规则/隐私协议）。");
+  }
+}
+
 /**
  * 创建新机器人（2026-09-29 真机逐步驱动验证的完整流程）：
  * 1. 名称/简介：placeholder 精准定位 input 本体（placeholder 同时挂在包装 div 上，
@@ -393,6 +430,7 @@ async function harvestVisibleNotices(page: Page): Promise<string> {
 async function createNewBot(page: Page, config: LoadedConfig, prompt: readline.Interface, result: ResultState): Promise<string> {
   await page.goto(LIST_CREATE_URL, { waitUntil: "domcontentloaded", timeout: config.timeoutMs });
   await page.waitForTimeout(5000);
+  await dismissFirstUseConsent(page);
 
   const createBtn = page.getByText("新建机器人", { exact: true }).first();
   if (!(await createBtn.isVisible({ timeout: 5000 }).catch(() => false))) {
@@ -611,9 +649,14 @@ async function createNewBot(page: Page, config: LoadedConfig, prompt: readline.I
     if (!takeover) {
       const xhrTail = xhrLog.slice(-5).join(" ⟂ ");
       const reason = postSaveNote || earlyToast || "无可见报错提示";
+      // 捕获的响应里没有任何创建/提交类动作（只有查询类）→ 保存点击根本没提交表单
+      const hasSubmitCall = xhrLog.some((l) => /(create|add|save|modify|update|del)[a-z]*ai/i.test(l) && !/getai/i.test(l));
+      const submitHint = hasSubmitCall
+        ? ""
+        : "；且捕获的接口响应里没有任何创建/提交类请求——保存点击未触发表单提交（常见原因：首次使用同意弹窗遮挡，现已自动关闭；若仍复现请截图后台弹窗状态）";
       throw new Error(
         `保存后未在机器人列表中确认到「${config.botName}」（当前列表：${names.join("、") || "空"}）。${reason}` +
-          (xhrTail ? `。保存相关接口响应：${xhrTail}` : "（未捕获到保存接口请求——保存点击未触发表单提交）")
+          (xhrTail ? `。保存相关接口响应：${xhrTail}` : "（未捕获到保存接口请求——保存点击未触发表单提交）") + submitHint
       );
     }
     return takeover;
@@ -953,6 +996,7 @@ async function main(): Promise<void> {
 
     // Step 2: 盘点已有机器人并选择
     logger.info("正在读取「机器人管理」列表...");
+    await dismissFirstUseConsent(page);
     let names: string[] = [];
     try {
       names = await listExistingBots(page, config);
@@ -1071,6 +1115,11 @@ async function main(): Promise<void> {
     ];
     await persistResult(config, result);
     logger.info(`结果文件已写入：${config.resultPath}`);
+    if (DEBUG_ENABLED) {
+      // 修复验证留证：成功态整页截图（详情页含 Bot ID）
+      const successArt = await saveArtifacts(page, config, "成功-配置完成");
+      logger.info(`[debug] 成功态截图：${successArt.screenshotPath ?? "无"}`);
+    }
     logger.info("配置完成：请在企业微信中测试机器人。");
   } finally {
     prompt.close();

@@ -3126,13 +3126,29 @@ async function publishApp(ctx: StepContext): Promise<void> {
         ctx.logger.info(`个人用模式：已勾选成员「${candidates[idx - 1]}」。`);
       }
 
-      const confirmAvailability = await waitForEnabledAction(availabilityDialog, ["确定", "确认"], ctx.config.timeoutMs);
-      if (!confirmAvailability) throw new Error("个人用模式：选择部分成员后未找到可用范围确认按钮。");
-      await confirmAvailability.locator.click({ timeout: ctx.config.timeoutMs });
-      await ctx.page.waitForTimeout(1200);
-      const dialogStillOpen = await ctx.page.locator(".ud__dialog__wrap").last().isVisible().catch(() => false);
-      if (dialogStillOpen) {
-        throw new Error("个人用模式：可用范围弹窗未关闭（成员可能未选中或校验未通过）。");
+      // 确认 + 关闭校验：点击后弹窗仍开着时先重试（勾选可能未真正生效——
+      // 成员行点击落在文本节点上不会触发复选框），三轮后才判失败。
+      // 2026-10-12 客户复现：勾选所有者后弹窗未关闭导致发布中止。
+      let dialogClosed = false;
+      for (let attempt = 1; attempt <= 3 && !dialogClosed; attempt++) {
+        const confirmAvailability = await waitForEnabledAction(availabilityDialog, ["确定", "确认"], ctx.config.timeoutMs);
+        if (!confirmAvailability) throw new Error("个人用模式：选择部分成员后未找到可用范围确认按钮。");
+        await confirmAvailability.locator.click({ timeout: ctx.config.timeoutMs });
+        await ctx.page.waitForTimeout(1200);
+        dialogClosed = !(await ctx.page.locator(".ud__dialog__wrap").last().isVisible().catch(() => false));
+        if (!dialogClosed) {
+          ctx.logger.warn(`个人用模式：第 ${attempt} 次确认后弹窗未关闭，重新勾选成员后重试...`);
+          if (ownerName) {
+            const retryRow = ctx.page.getByText(ownerName, { exact: true }).last();
+            if (await retryRow.isVisible({ timeout: 1000 }).catch(() => false)) {
+              await retryRow.click({ timeout: 3000 }).catch(() => undefined);
+              await ctx.page.waitForTimeout(600);
+            }
+          }
+        }
+      }
+      if (!dialogClosed) {
+        throw new Error("个人用模式：可用范围弹窗未关闭（已确认+重勾选重试 3 次仍无效；多为后台校验未通过。请人工在飞书后台把应用可用范围设为「仅创建者」后重跑向导）。");
       }
       const finalPartial = await waitForAnyText(ctx.page, ["部分成员"], 3000);
       if (!finalPartial) {
@@ -3158,10 +3174,24 @@ async function publishApp(ctx: StepContext): Promise<void> {
       );
       if (!allMembersOption) throw new Error("可用范围弹窗中未找到“全部成员”选项。");
       await allMembersOption.click({ timeout: ctx.config.timeoutMs });
-      const confirmAvailability = await waitForEnabledAction(availabilityDialog, ["确定", "确认"], ctx.config.timeoutMs);
-      if (!confirmAvailability) throw new Error("选择全部成员后未找到可用范围确认按钮。");
-      await confirmAvailability.locator.click({ timeout: ctx.config.timeoutMs });
-      await ctx.page.waitForTimeout(800);
+      // 确认后校验关闭，未关闭则重选重确认（与个人用分支同型防御：
+      // 2026-10-14 本机实测该分支存在确认点击被吞的瞬时失败）。
+      let publicDialogClosed = false;
+      for (let attempt = 1; attempt <= 3 && !publicDialogClosed; attempt++) {
+        const confirmAvailability = await waitForEnabledAction(availabilityDialog, ["确定", "确认"], ctx.config.timeoutMs);
+        if (!confirmAvailability) throw new Error("选择全部成员后未找到可用范围确认按钮。");
+        await confirmAvailability.locator.click({ timeout: ctx.config.timeoutMs });
+        await ctx.page.waitForTimeout(800);
+        publicDialogClosed = !(await ctx.page.locator(".ud__dialog__wrap").last().isVisible().catch(() => false));
+        if (!publicDialogClosed) {
+          ctx.logger.warn(`公用模式：第 ${attempt} 次确认后弹窗未关闭，重选“全部成员”后重试...`);
+          await allMembersOption.click({ timeout: ctx.config.timeoutMs }).catch(() => undefined);
+          await ctx.page.waitForTimeout(500);
+        }
+      }
+      if (!publicDialogClosed) {
+        throw new Error("公用模式：可用范围弹窗未关闭（已重试 3 次；请人工在飞书后台把应用可用范围设为“全部成员”后重跑向导）。");
+      }
     }
     const finalAvailability = await waitForAnyText(ctx.page, ["全部成员", "所有员工"], 3000);
     if (!finalAvailability) {
